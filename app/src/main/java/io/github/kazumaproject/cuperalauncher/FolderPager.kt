@@ -102,8 +102,8 @@ internal class FolderPager(
         settle = ValueAnimator.ofInt(scrollX, target).apply {
             duration = when {
                 edgeTurn -> 260
-                returning -> 320
-                else -> 390
+                returning -> 265
+                else -> 280
             }
             interpolator = if (returning) PathInterpolator(.30f, 0f, .23f, 1f)
                 else PathInterpolator(.27f, .60f, .38f, 1f)
