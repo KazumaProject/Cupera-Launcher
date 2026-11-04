@@ -375,6 +375,102 @@ class LauncherScreenTest {
         }
     }
 
+    @Test fun folderSwipesAndEdgeDragPreserveTheOtherTiles() {
+        assumeTrue("Requires an isolated workspace",
+            InstrumentationRegistry.getArguments().getString("folderFixture") == "true")
+        Workspace(instrumentation.targetContext).use { store ->
+            val initial = store.read()
+            val apps = initial.tiles.filter { it.isApp && it.slot.page == 0 && it.slot.folder.isEmpty() }.take(10)
+            assumeTrue("Requires ten apps on the first page", apps.size == 10)
+            val folder = Tile(java.util.UUID.randomUUID().toString(), TileKind.FOLDER, apps.first().slot, name = "Paged folder")
+            val children = apps.mapIndexed { index, tile ->
+                tile.copy(slot = Slot(0, index, folder.id), name = "Folder app ${index + 1}")
+            }
+            assertTrue(store.save(initial.revision, initial.tiles - apps.toSet() + folder + children))
+            val installed = store.read()
+            var activity: Activity? = null
+            try {
+                val home = open(HomeActivity::class.java).also { activity = it }
+                waitFor(home) { views -> home.hasWindowFocus() && views.any { it.contentDescription == "Paged folder" } }
+                onMain { descendants(home.window.decorView).first { it.contentDescription == "Paged folder" }.performClick() }
+                waitFor(home) { views -> views.any {
+                    it.contentDescription == "Paged folder. Rename folder" && (it.parent as View).scaleX == 1f
+                } }
+                fun swipe(forward: Boolean) {
+                    val path = FloatArray(3)
+                    onMain {
+                        val pager = descendants(home.window.decorView).filterIsInstance<FolderPager>().single()
+                        val origin = IntArray(2).also(pager::getLocationOnScreen)
+                        path[0] = origin[0] + pager.width * .8f
+                        path[1] = origin[0] + pager.width * .2f
+                        path[2] = origin[1] + pager.height * .65f
+                    }
+                    val from = if (forward) path[0] else path[1]
+                    val to = if (forward) path[1] else path[0]
+                    val down = SystemClock.uptimeMillis()
+                    touch(down, MotionEvent.ACTION_DOWN, from, path[2], instrumentation.uiAutomation)
+                    for (step in 1..9) {
+                        SystemClock.sleep(23)
+                        touch(down, MotionEvent.ACTION_MOVE, from + (to - from) * step / 9,
+                            path[2], instrumentation.uiAutomation)
+                    }
+                    touch(down, MotionEvent.ACTION_UP, to, path[2], instrumentation.uiAutomation)
+                }
+                fun expectPage(number: Int, shown: String, hidden: String) {
+                    waitFor(home) {
+                        val visible = accessibleDescendants(home.window.decorView).map { it.contentDescription }.toSet()
+                        "Folder page $number of 2" in visible && shown in visible && hidden !in visible
+                    }
+                }
+                expectPage(1, "Folder app 1", "Folder app 10")
+                swipe(true)
+                expectPage(2, "Folder app 10", "Folder app 1")
+                swipe(false)
+                expectPage(1, "Folder app 1", "Folder app 10")
+                assertEquals(installed, store.read())
+
+                onMain { home.onBackPressed() }
+                waitFor(home) { views -> views.none { it is FolderPager } }
+                val (blankX, blankY) = whitespaceBelowGrid(home)
+                val hold = SystemClock.uptimeMillis()
+                touch(hold, MotionEvent.ACTION_DOWN, blankX, blankY)
+                SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 100L)
+                touch(hold, MotionEvent.ACTION_UP, blankX, blankY)
+                waitFor(home) { views -> views.any { it is TextView && it.text == "Edit" } }
+                onMain { descendants(home.window.decorView).first { it.contentDescription == "Paged folder" }.performClick() }
+                waitFor(home) { views -> views.any {
+                    it.contentDescription == "Paged folder. Rename folder" && (it.parent as View).scaleX == 1f
+                } }
+                val (sourceX, sourceY) = screenCenter(home, "Folder app 1")
+                val destination = FloatArray(3)
+                onMain {
+                    val pager = descendants(home.window.decorView).filterIsInstance<FolderPager>().single()
+                    val origin = IntArray(2).also(pager::getLocationOnScreen)
+                    destination[0] = origin[0] + pager.width - home.dp(10).toFloat()
+                    destination[1] = origin[0] + pager.width * .83f
+                    destination[2] = origin[1] + pager.height * .83f
+                }
+                val drag = SystemClock.uptimeMillis()
+                touch(drag, MotionEvent.ACTION_DOWN, sourceX, sourceY, instrumentation.uiAutomation)
+                touch(drag, MotionEvent.ACTION_MOVE, destination[0], destination[2], instrumentation.uiAutomation)
+                expectPage(2, "Folder app 10", "Folder app 1")
+                touch(drag, MotionEvent.ACTION_MOVE, destination[1], destination[2], instrumentation.uiAutomation)
+                touch(drag, MotionEvent.ACTION_UP, destination[1], destination[2], instrumentation.uiAutomation)
+                waitFor(home) { views -> views.any { it.contentDescription == "Folder page 2 of 2" } &&
+                    store.read().revision == installed.revision + 1 }
+                val moved = store.read()
+                assertEquals(Slot(0, 17, folder.id), moved.tiles.single { it.id == apps.first().id }.slot)
+                assertEquals(installed.tiles.filterNot { it.id == apps.first().id }.toSet(),
+                    moved.tiles.filterNot { it.id == apps.first().id }.toSet())
+            } finally {
+                activity?.let { home -> onMain { home.finish() } }
+                val current = store.read()
+                if (current.revision in installed.revision..installed.revision + 1 && current.tiles.any { it.id == folder.id })
+                    assertTrue(store.save(current.revision, initial.tiles))
+            }
+        }
+    }
+
     private fun open(type: Class<out Activity>): Activity = instrumentation.startActivitySync(
         Intent(instrumentation.targetContext, type).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     )

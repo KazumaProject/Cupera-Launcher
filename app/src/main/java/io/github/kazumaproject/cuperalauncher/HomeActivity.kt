@@ -85,6 +85,8 @@ class HomeActivity : Activity() {
     private var previewView: PageViewport? = null
     private var dockGrid: TileGrid? = null
     private var folderGrid: TileGrid? = null
+    private var folderPager: FolderPager? = null
+    private var folderPage = 0
     private var browser: AppBrowser? = null
     private var searchPanel: View? = null
     private var searchAnimator: ValueAnimator? = null
@@ -465,6 +467,7 @@ class HomeActivity : Activity() {
         browser = null
         if (backdrop == null) homeFooter = null
         folderGrid = null
+        folderPager = null
         val systemWallpaper = store.setting("wallpaper", "tide") == "system"
         if (systemWallpaper) window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
@@ -1080,6 +1083,7 @@ class HomeActivity : Activity() {
         val origin = IntArray(2).also(icon::getLocationOnScreen)
         folderAnchor = Rect(origin[0], origin[1], origin[0] + icon.width, origin[1] + icon.height)
         folder = tile.id
+        folderPage = 0
         openedFolderTile = frame
         frame.alpha = 0f
         drawFolder(tile.id, homeLayer)
@@ -1095,20 +1099,57 @@ class HomeActivity : Activity() {
         val height = min((width * 1.13f).toInt(), content.height * 3 / 4)
         val inset = dp(14)
         val children = layout.tiles.filter { it.slot.folder == id }
-        val rows = maxOf(3, (children.maxOfOrNull { it.slot.cell } ?: 0) / 3 + 1)
-        val gridHeight = rows * maxOf(dp(64), (height - inset * 2) / 3)
-        val tiles = TileGrid(this, 0, id, width - inset * 2, gridHeight, 3, rows, ::tileView)
-        tiles.populate(children)
-        folderGrid = tiles
+        val pageCount = (children.maxOfOrNull { it.slot.cell } ?: 0) / 9 + 1
+        val pageWidth = width - inset * 2
+        val dotsHeight = if (pageCount > 1) dp(22) else 0
+        val gridHeight = 3 * maxOf(dp(64), (height - inset * 2 - dotsHeight) / 3)
+        val grids = List(pageCount) { index ->
+            TileGrid(this, 0, id, pageWidth, gridHeight, 3, 3, ::tileView, firstCell = index * 9).apply {
+                // Empty rows still have to receive drops.
+                minimumHeight = gridHeight
+                populate(children)
+            }
+        }
+        folderPage = folderPage.coerceIn(grids.indices)
+        folderGrid = grids[folderPage]
         val panel = FrameLayout(this).apply {
             setPadding(inset, inset, inset, inset)
             background = rounded(0x42dcefff, dp(34).toFloat(), 0x64ffffff)
             clipToOutline = true
             isClickable = true
         }
-        panel.addView(android.widget.ScrollView(this).apply {
-            addView(tiles, FrameLayout.LayoutParams(-1, gridHeight))
-        }, FrameLayout.LayoutParams(-1, -1))
+        val pages = grids.map { grid ->
+            android.widget.ScrollView(this).apply {
+                addView(grid, FrameLayout.LayoutParams(-1, gridHeight))
+            }
+        }
+        if (pageCount == 1) {
+            panel.addView(pages.single(), FrameLayout.LayoutParams(-1, -1))
+        } else {
+            val dots = horizontal().apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                setPadding(0, 0, 0, dp(2))
+                repeat(pageCount) {
+                    addView(View(this@HomeActivity).apply {
+                        background = rounded(Color.WHITE, dp(4).toFloat())
+                    }, LinearLayout.LayoutParams(dp(7), dp(7)).apply {
+                        setMargins(dp(4), 0, dp(4), 0)
+                    })
+                }
+            }
+            fun select(index: Int) {
+                folderPage = index
+                folderGrid = grids[index]
+                grids.indices.forEach { dots.getChildAt(it).alpha = if (it == index) 1f else .45f }
+                dots.contentDescription = "Folder page ${index + 1} of $pageCount"
+            }
+            val pager = FolderPager(this, pages, pageWidth, folderPage, { reduced }, ::select)
+            folderPager = pager
+            select(folderPage)
+            dots.setOnClickListener { pager.showPage((folderPage + 1) % pageCount) }
+            panel.addView(pager, FrameLayout.LayoutParams(-1, -1).apply { bottomMargin = dotsHeight })
+            panel.addView(dots, FrameLayout.LayoutParams(-1, dotsHeight, Gravity.BOTTOM))
+        }
         val centerOffset = (root.paddingBottom - root.paddingTop) / 2
         val card = FrameLayout(this).apply { translationY = centerOffset.toFloat() }
         card.addView(panel, FrameLayout.LayoutParams(width, height, Gravity.CENTER))
@@ -1196,6 +1237,7 @@ class HomeActivity : Activity() {
         openedFolderTile = null
         folderPresentation = null
         folderGrid = null
+        folderPager = null
     }
 
     private fun revealFolder() {
@@ -1374,11 +1416,13 @@ class HomeActivity : Activity() {
     private class TileGrid(
         context: Context, val page: Int, val folder: String, val gridWidth: Int, val gridHeight: Int,
         private val columns: Int, private val rows: Int,
-        private val viewFactory: (Tile, Int, Int) -> View
+        private val viewFactory: (Tile, Int, Int) -> View,
+        private val firstCell: Int = 0
     ) : FrameLayout(context) {
         private val widthPerCell = gridWidth / columns
         private val heightPerCell = gridHeight / rows
         private val tileViews = mutableMapOf<String, Pair<Tile, View>>()
+        private val cells = firstCell until firstCell + columns * rows
 
         private fun dockStart(count: Int) = (gridWidth - count * widthPerCell) / 2
 
@@ -1394,13 +1438,14 @@ class HomeActivity : Activity() {
             val projectedDock = dockPositions(tiles)
             tileViews.values.forEach { (original, view) ->
                 val target = destinations[original.id]?.slot
-                val offset = target?.takeIf { it.page == page && it.folder == folder }
+                val offset = target?.takeIf { it.page == page && it.folder == folder && it.cell in cells }
                 val dx = when {
                     offset == null -> 0f
                     page == Slot.DOCK -> (projectedDock.getValue(original.id) - originalDock.getValue(original.id)).toFloat()
                     else -> ((offset.cell % columns - original.slot.cell % columns) * widthPerCell).toFloat()
                 }
-                val dy = if (offset == null) 0f else ((offset.cell / columns - original.slot.cell / columns) * heightPerCell).toFloat()
+                val dy = if (offset == null) 0f else
+                    (((offset.cell - firstCell) / columns - (original.slot.cell - firstCell) / columns) * heightPerCell).toFloat()
                 val alpha = if (original.id == dragging) .25f else 1f
                 view.animate().cancel()
                 if (reduced) {
@@ -1413,13 +1458,13 @@ class HomeActivity : Activity() {
 
         fun populate(tiles: List<Tile>) {
             val dock = dockPositions(tiles)
-            tiles.filter { it.slot.page == page && it.slot.folder == folder }.forEach {
+            tiles.filter { it.slot.page == page && it.slot.folder == folder && it.slot.cell in cells }.forEach {
                 val gap = if (it.isWidget) context.dp(4) else 0
                 val child = viewFactory(it, widthPerCell, heightPerCell)
                 tileViews[it.id] = it to child
                 addView(child, LayoutParams(widthPerCell * it.width - 2 * gap, heightPerCell * it.height - 2 * gap).apply {
                         leftMargin = (dock[it.id] ?: (it.slot.cell % columns * widthPerCell)) + gap
-                        topMargin = it.slot.cell / columns * heightPerCell + gap
+                        topMargin = (it.slot.cell - firstCell) / columns * heightPerCell + gap
                     })
             }
         }
@@ -1446,7 +1491,7 @@ class HomeActivity : Activity() {
                 return if (offset < 0) null else dock.getOrNull(offset.toInt() / widthPerCell)?.slot
             }
             if (localX < 0 || localY < 0 || localX >= widthPerCell * columns || localY >= heightPerCell * rows) return null
-            return Slot(page, localY.toInt() / heightPerCell * columns + localX.toInt() / widthPerCell, folder)
+            return Slot(page, firstCell + localY.toInt() / heightPerCell * columns + localX.toInt() / widthPerCell, folder)
         }
 
         fun dockEdge(x: Float, y: Float): DockEdge? {
@@ -1490,9 +1535,14 @@ class HomeActivity : Activity() {
         val active get() = dragged != null || paging || previewingSearch
         private val hold = Runnable { finishEmptyHold() }
         private val turnPage = Runnable {
-            if (dragged != null && edge != 0 && host.folder == null) {
-                host.switchPage(host.page + edge)
-                candidate = null
+            if (dragged != null && edge != 0) {
+                if (host.folder == null) {
+                    host.switchPage(host.page + edge)
+                    candidate = null
+                } else {
+                    host.folderPager?.showPage(host.folderPage + edge, animate = false)
+                    updateDrag()
+                }
             }
         }
 
@@ -1668,7 +1718,7 @@ class HomeActivity : Activity() {
                 host.folder = null
                 host.render()
             }
-            val currentEdge = when {
+            val currentEdge = if (host.folder != null) host.folderPager?.edgeAt(x, y) ?: 0 else when {
                 localX < host.dp(25) -> -1
                 localX > host.content.width - host.dp(25) -> 1
                 else -> 0
