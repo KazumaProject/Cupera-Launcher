@@ -42,6 +42,11 @@ class Workspace(context: Context, databaseName: String = "workspace.db") :
 
     fun settingEnabled(name: String, default: Boolean = true) = setting(name, default.toString()) == "true"
 
+    fun hiddenPages(): Set<Int> = setting("hidden_pages").split(',')
+        .mapNotNull { it.toIntOrNull()?.takeIf { page -> page in 0 until Layout.MAX_PAGES } }.toSet()
+
+    fun setHiddenPages(pages: Set<Int>) = put("hidden_pages", pages.sorted().joinToString(","))
+
     fun put(name: String, value: String) = put(writableDatabase, name, value)
 
     private fun put(db: SQLiteDatabase, name: String, value: String) {
@@ -86,6 +91,8 @@ class Workspace(context: Context, databaseName: String = "workspace.db") :
         "wallpaper" -> value in setOf("tide", "dusk", "system")
         "icon_size" -> value in setOf("small", "regular", "large")
         "motion" -> value in setOf("system", "reduced")
+        "hidden_pages" -> value.isEmpty() || value.length <= Layout.MAX_PAGES * 3 &&
+            value.split(',').all { it.toIntOrNull()?.let { page -> page in 0 until Layout.MAX_PAGES } == true }
         else -> value == "true" || value == "false"
     }
 
@@ -94,7 +101,7 @@ class Workspace(context: Context, databaseName: String = "workspace.db") :
             "appearance" to "system", "wallpaper" to "tide", "icon_size" to "regular",
             "labels" to "true", "dock" to "true", "search_gesture" to "true", "motion" to "system",
             "badges" to "true", "add_new" to "false", "folder_drop" to "true", "search_button" to "true",
-            "library_groups" to "true", "page_dots" to "true", "widget_seconds" to "false"
+            "library_groups" to "true", "page_dots" to "true", "widget_seconds" to "false", "hidden_pages" to ""
         )
 
         private fun encode(tiles: List<Tile>) = JSONArray().apply {

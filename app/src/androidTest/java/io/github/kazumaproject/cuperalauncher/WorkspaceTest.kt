@@ -58,6 +58,22 @@ class WorkspaceTest {
         assertEquals("large", store.setting("icon_size"))
     }
 
+    @Test fun pageVisibilityRoundTripsWithoutChangingPlacement() {
+        val tiles = listOf(app("first", 0, 0), app("second", 0, 0).copy(slot = Slot(1, 0)))
+        assertTrue(store.save(store.read().revision, tiles))
+        store.setHiddenPages(setOf(1))
+        val backup = store.export(0)
+        store.setHiddenPages(emptySet())
+        store.restore(backup, 0)
+        assertEquals(setOf(1), store.hiddenPages())
+        assertEquals(listOf(0), store.read().visiblePages(store.hiddenPages()))
+        assertEquals(tiles, store.read().tiles)
+        val invalid = JSONObject(backup).apply { getJSONObject("settings").put("hidden_pages", "32") }
+        assertTrue(runCatching { store.restore(invalid.toString(), 0) }.isFailure)
+        assertEquals(setOf(1), store.hiddenPages())
+        assertEquals(tiles, store.read().tiles)
+    }
+
     private fun app(id: String, cell: Int, serial: Long) =
         Tile(id, TileKind.APP, Slot(0, cell), AppKey("fixture.app/.$id", serial))
 }

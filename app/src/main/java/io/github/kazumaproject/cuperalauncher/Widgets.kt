@@ -75,7 +75,8 @@ class Widgets(
 
     private fun addBuiltIn(page: Int, kind: TileKind) {
         val current = store.read()
-        val slot = current.firstFree(page, 2, 2) ?: return message("No room for this widget.")
+        val slot = current.firstFree(page, 2, 2, excludedPages = store.hiddenPages() - page)
+            ?: return message("No room for this widget.")
         val tile = Tile(java.util.UUID.randomUUID().toString(), kind, slot, width = 2, height = 2)
         if (store.save(current.revision, current.tiles + tile)) onChanged()
     }
@@ -83,7 +84,8 @@ class Widgets(
     private fun bind(page: Int, provider: AppWidgetProviderInfo, replace: Tile?) {
         val width = replace?.width ?: provider.targetCellWidth.takeIf { it > 0 }?.coerceIn(1, 4) ?: 2
         val height = replace?.height ?: provider.targetCellHeight.takeIf { it > 0 }?.coerceIn(1, 6) ?: 2
-        val slot = replace?.slot ?: store.read().firstFree(page, width, height) ?: return message("No room for this widget.")
+        val slot = replace?.slot ?: store.read().firstFree(page, width, height, excludedPages = store.hiddenPages() - page)
+            ?: return message("No room for this widget.")
         pendingSlot = slot
         replacing = replace?.id
         requestedSize = width to height

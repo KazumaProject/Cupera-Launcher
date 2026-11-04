@@ -14,6 +14,7 @@ import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Rect
 import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -29,6 +30,7 @@ import android.view.WindowInsetsController
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -50,6 +52,9 @@ class HomeActivity : Activity() {
     private var previewPage = -1
     private var homeFooter: LinearLayout? = null
     private var editToolbar: LinearLayout? = null
+    private var hiddenPages = emptySet<Int>()
+    private var pageVisibilityDraft: Set<Int>? = null
+    private val visiblePages get() = layout.visiblePages(hiddenPages)
     private var pageIndicatorVisible = false
     private val restoreSearch = Runnable {
         pageIndicatorVisible = false
@@ -162,6 +167,7 @@ class HomeActivity : Activity() {
         if (before != darkMode && browser != null) render()
         systemBars(root, darkMode && (search || library) || !search && !library, keepStatusInset = true)
         layout = store.read()
+        hiddenPages = store.hiddenPages()
         refreshApps()
         BadgeListener.changed = { if (!editing && !search && !library && !gesture.active) render() }
     }
@@ -200,6 +206,7 @@ class HomeActivity : Activity() {
             page = 0
             folder = null
             editing = false
+            pageVisibilityDraft = null
             library = false
             search = false
             resetPageIndicator()
@@ -268,7 +275,7 @@ class HomeActivity : Activity() {
 
     private fun reload() {
         layout = store.read()
-        if (!editing) page = page.coerceIn(0, layout.pages - 1)
+        hiddenPages = store.hiddenPages()
         if (layout.tiles.none { it.id == folder }) folder = null
         widgets.reconcile()
         render()
@@ -280,7 +287,8 @@ class HomeActivity : Activity() {
             slot, key, name)
 
     private fun addApp(key: AppKey, name: String = "") {
-        val slot = layout.firstFree(page.coerceAtMost(layout.pages - 1)) ?: return message("Home is full.")
+        val slot = layout.firstFree(page.coerceAtMost(layout.pages - 1), excludedPages = hiddenPages - visiblePages.toSet())
+            ?: return message("Home is full.")
         if (commit(layout.tiles + appTile(key, slot, name)) && key.shortcut.isNotEmpty()) apps.updatePinned(layout.tiles, listOf(key))
     }
 
@@ -305,6 +313,11 @@ class HomeActivity : Activity() {
             if (editing) controller.hide(WindowInsets.Type.statusBars())
             else controller.show(WindowInsets.Type.statusBars())
         }
+        if (pageVisibilityDraft != null) {
+            drawPageEditor()
+            drawEditToolbar()
+            return
+        }
         if (isPanel) {
             val panel = AppBrowser(this, apps, entries, darkMode, store, privateOpen,
                 onBack = ::back, onLibrary = { showBrowser(false) }, onAdd = ::addApp, onPrivate = { privateOpen = it },
@@ -315,6 +328,9 @@ class HomeActivity : Activity() {
         }
         previewPage = -1
         previewView = null
+        if (!editing && page !in visiblePages) {
+            page = visiblePages.lastOrNull { it < page } ?: visiblePages.first()
+        }
         workspace = FrameLayout(this).apply { clipChildren = false }
         content.addView(workspace, FrameLayout.LayoutParams(-1, -1))
         val totalWidth = content.width
@@ -371,16 +387,99 @@ class HomeActivity : Activity() {
                 menu.add("Add Widget").setOnMenuItemClickListener { widgets.choose(page); true }
                 menu.add("Customize").setOnMenuItemClickListener { openEditSettings("Icons & Dock"); true }
                 menu.add("Edit Wallpaper").setOnMenuItemClickListener { openEditSettings("Wallpaper & Appearance"); true }
+                menu.add("Edit Pages").setOnMenuItemClickListener {
+                    pageVisibilityDraft = hiddenPages - visiblePages.toSet()
+                    render()
+                    true
+                }
                 show()
             }
         }
-        toolbar.addView(edit, LinearLayout.LayoutParams(-2, buttonHeight))
+        if (pageVisibilityDraft == null) toolbar.addView(edit, LinearLayout.LayoutParams(-2, buttonHeight))
         toolbar.addView(View(this), LinearLayout.LayoutParams(0, 0, 1f))
-        toolbar.addView(button("Done").apply { setOnClickListener { editing = false; reload() } }, LinearLayout.LayoutParams(-2, buttonHeight))
+        toolbar.addView(button("Done").apply { setOnClickListener {
+            pageVisibilityDraft?.let(store::setHiddenPages)
+            pageVisibilityDraft = null
+            editing = false
+            reload()
+        } }, LinearLayout.LayoutParams(-2, buttonHeight))
         root.addView(toolbar, FrameLayout.LayoutParams(-1, buttonHeight, Gravity.TOP).apply {
             topMargin = dp(9) - root.paddingTop
         })
         editToolbar = toolbar
+    }
+
+    private fun drawPageEditor() {
+        val width = min((content.width * .35f).toInt(), dp(180))
+        val height = min((width * 1.74f).toInt(), content.height / 2)
+        val margin = min((content.width * .05f).toInt(), dp(20))
+        val pages = vertical().apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(36), 0, dp(36) + (root.paddingTop - root.paddingBottom).coerceAtLeast(0))
+        }
+        (0 until layout.pages).chunked(2).forEach { pair ->
+            val row = horizontal().apply { gravity = Gravity.CENTER }
+            pages.addView(row)
+            pair.forEach { index ->
+                val column = vertical().apply { gravity = Gravity.CENTER_HORIZONTAL }
+                row.addView(column, LinearLayout.LayoutParams(width, -2).apply { setMargins(margin, dp(8), margin, dp(8)) })
+                val preview = FrameLayout(this).apply {
+                    background = rounded(0x44def7ff, dp(20).toFloat(), 0x36ffffff)
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                }
+                column.addView(preview, LinearLayout.LayoutParams(width, height))
+                val padding = width / 12
+                val cellWidth = (width - padding * 2) / 4
+                val cellHeight = (height - padding * 2) / 6
+                layout.tiles.filter { it.slot.page == index && it.slot.folder.isEmpty() }.forEach { tile ->
+                    val icon = if (tile.isApp) appIcon(tile).apply {
+                        background = rounded(0x30ffffff, dp(4).toFloat())
+                        clipToOutline = true
+                    } else View(this).apply {
+                        background = rounded(0x88ffffff.toInt(), dp(3).toFloat())
+                    }
+                    val inset = if (tile.isApp) cellWidth / 7 else 1
+                    preview.addView(icon, FrameLayout.LayoutParams(
+                        cellWidth * tile.width - inset * 2, cellHeight * tile.height - inset * 2
+                    ).apply {
+                        leftMargin = padding + tile.slot.cell % 4 * cellWidth + inset
+                        topMargin = padding + tile.slot.cell / 4 * cellHeight + inset
+                    })
+                }
+                val check = CheckBox(this).apply {
+                    contentDescription = "Show page ${index + 1}"
+                    buttonDrawable = null
+                    gravity = Gravity.CENTER
+                    setPadding(0, 0, 0, 0)
+                    setTextColor(Color.WHITE)
+                    textSize = 16f
+                    background = InsetDrawable(StateListDrawable().apply {
+                        addState(intArrayOf(android.R.attr.state_checked), rounded(0x70e4ffff, dp(16).toFloat()))
+                        addState(intArrayOf(), rounded(0x20ffffff, dp(16).toFloat(), 0xaaffffff.toInt()))
+                    }, dp(8))
+                    isChecked = index !in pageVisibilityDraft.orEmpty()
+                    text = if (isChecked) "✓" else ""
+                }
+                preview.alpha = if (check.isChecked) 1f else .45f
+                check.setOnClickListener {
+                    val draft = pageVisibilityDraft ?: return@setOnClickListener
+                    val next = if (check.isChecked) draft - index else draft + index
+                    if ((0 until layout.pages).all { it in next }) {
+                        check.isChecked = true
+                        message("Keep at least one Home page visible.")
+                    } else {
+                        pageVisibilityDraft = next
+                        preview.alpha = if (check.isChecked) 1f else .45f
+                        check.text = if (check.isChecked) "✓" else ""
+                    }
+                }
+                column.addView(check, LinearLayout.LayoutParams(dp(48), dp(48)))
+            }
+        }
+        content.addView(android.widget.ScrollView(this).apply {
+            isFillViewport = true
+            addView(pages, FrameLayout.LayoutParams(-1, -2))
+        }, FrameLayout.LayoutParams(-1, -1))
     }
 
     private fun openEditSettings(section: String) {
@@ -394,7 +493,8 @@ class HomeActivity : Activity() {
 
     private fun followPage(dx: Float) {
         if (reduced) return
-        val adjacent = page + if (dx < 0) 1 else -1
+        val direction = if (dx < 0) 1 else -1
+        val adjacent = pageInDirection(direction)
         val current = grid ?: return
         workspace.animate().cancel()
         if (adjacent != previewPage) {
@@ -405,7 +505,7 @@ class HomeActivity : Activity() {
                 val neighbor = TileGrid(this, adjacent, "", current.gridWidth, current.gridHeight, 4, 6, ::tileView)
                 neighbor.populate(layout.tiles)
                 val primary = workspace.getChildAt(0)
-                previewView = wrapGrid(neighbor).apply { translationX = ((adjacent - page) * content.width).toFloat() }
+                previewView = wrapGrid(neighbor).apply { translationX = (direction * content.width).toFloat() }
                 workspace.addView(previewView, FrameLayout.LayoutParams(primary.layoutParams as FrameLayout.LayoutParams))
             }
         }
@@ -436,29 +536,30 @@ class HomeActivity : Activity() {
         if (editing) {
             bar.addView(label("${page + 1}  /  ${maxOf(layout.pages, page + 1)}", 14f, Color.WHITE).apply { gravity = Gravity.CENTER })
         } else {
+            val visible = visiblePages
             val searchButton = store.settingEnabled("search_button")
-            val dots = store.settingEnabled("page_dots") && layout.pages > 1 && (pageIndicatorVisible || !searchButton)
+            val dots = store.settingEnabled("page_dots") && visible.size > 1 && (pageIndicatorVisible || !searchButton)
             if (dots) {
-                bar.addView(footerPill((0 until min(layout.pages, 8)).joinToString(" ") { if (it == page) "●" else "·" }) {
-                    switchPage(if (page + 1 == layout.pages) 0 else page + 1)
-                }.apply { contentDescription = "Page ${page + 1} of ${this@HomeActivity.layout.pages}. Next page" })
+                bar.addView(footerPill(visible.take(8).joinToString(" ") { if (it == page) "●" else "·" }) {
+                    switchPage(visiblePages.firstOrNull { it > page } ?: visiblePages.first())
+                }.apply { contentDescription = "Page ${visible.indexOf(page) + 1} of ${visible.size}. Next page" })
             }
             if (!searchButton) bar.addView(footerPill("Library") { showBrowser(false) })
             else if (!dots) bar.addView(footerPill("⌕  Search") { showBrowser(true) }.apply {
                 accessibilityDelegate = object : View.AccessibilityDelegate() {
                     override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
                         super.onInitializeAccessibilityNodeInfo(host, info)
-                        info.isScrollable = this@HomeActivity.layout.pages > 1
-                        if (page > 0) info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-                        if (page + 1 < this@HomeActivity.layout.pages) {
+                        info.isScrollable = visiblePages.size > 1
+                        if (pageInDirection(-1) >= 0) info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                        if (pageInDirection(1) < this@HomeActivity.layout.pages) {
                             info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                         }
                     }
 
                     override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
                         val next = when (action) {
-                            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> page - 1
-                            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> page + 1
+                            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> pageInDirection(-1)
+                            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> pageInDirection(1)
                             else -> return super.performAccessibilityAction(host, action, args)
                         }
                         if (next !in 0 until this@HomeActivity.layout.pages) return false
@@ -472,7 +573,7 @@ class HomeActivity : Activity() {
 
     private fun revealPageIndicator() {
         handler.removeCallbacks(restoreSearch)
-        if (editing || pageIndicatorVisible || layout.pages <= 1 || !store.settingEnabled("page_dots") ||
+        if (editing || pageIndicatorVisible || visiblePages.size <= 1 || !store.settingEnabled("page_dots") ||
             !store.settingEnabled("search_button")) return
         pageIndicatorVisible = true
         homeFooter?.let(::fillFooter)
@@ -631,9 +732,10 @@ class HomeActivity : Activity() {
     private fun back() {
         when {
             search || library -> { closeKeyboard(); invalidatePrivate(); search = false; library = false }
+            pageVisibilityDraft != null -> pageVisibilityDraft = null
             folder != null -> { closeFolder(); return }
             editing -> editing = false
-            page != 0 -> page = 0
+            page != visiblePages.first() -> page = visiblePages.first()
             else -> return
         }
         reload()
@@ -812,6 +914,13 @@ class HomeActivity : Activity() {
             }.setNegativeButton("Cancel", null).show()
     }
 
+    private fun pageInDirection(direction: Int): Int {
+        if (editing) return page + direction
+        val visible = visiblePages
+        return if (direction > 0) visible.firstOrNull { it > page } ?: layout.pages
+        else visible.lastOrNull { it < page } ?: -1
+    }
+
     private fun switchPage(index: Int) {
         if (index < 0 || index == page) { settlePage(); return }
         if (!editing && index >= layout.pages) { showBrowser(false); return }
@@ -832,7 +941,7 @@ class HomeActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (::gesture.isInitialized && !search && !library && gesture.handle(event)) return true
+        if (::gesture.isInitialized && !search && !library && pageVisibilityDraft == null && gesture.handle(event)) return true
         return super.dispatchTouchEvent(event)
     }
 
@@ -1049,8 +1158,8 @@ class HomeActivity : Activity() {
                         paging = false
                         val threshold = host.dp(44)
                         when {
-                            dx < -threshold -> host.switchPage(host.page + 1)
-                            dx > threshold -> host.switchPage(host.page - 1)
+                            dx < -threshold -> host.switchPage(host.pageInDirection(1))
+                            dx > threshold -> host.switchPage(host.pageInDirection(-1))
                             else -> host.settlePage()
                         }
                         tracking = false

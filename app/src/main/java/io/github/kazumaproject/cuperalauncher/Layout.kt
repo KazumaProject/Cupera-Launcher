@@ -38,8 +38,12 @@ data class Layout(val revision: Long, val tiles: List<Tile>) {
         it.slot.page == slot.page && it.slot.folder == slot.folder && slot.cell in it.occupied()
     }
 
-    fun firstFree(page: Int, width: Int = 1, height: Int = 1, start: Int = 0): Slot? {
+    fun visiblePages(hidden: Set<Int>): List<Int> =
+        (0 until pages).filterNot { it in hidden }.ifEmpty { listOf(0) }
+
+    fun firstFree(page: Int, width: Int = 1, height: Int = 1, start: Int = 0, excludedPages: Set<Int> = emptySet()): Slot? {
         for (p in page until MAX_PAGES) {
+            if (p in excludedPages) continue
             for (cell in (if (p == page) start else 0) until 24) {
                 val candidate = Slot(p, cell)
                 if (cell % 4 + width > 4 || cell / 4 + height > 6) continue
