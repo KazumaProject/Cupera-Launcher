@@ -29,6 +29,8 @@ import android.view.WindowManager
 import android.view.WindowInsetsController
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.animation.LinearInterpolator
+import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.CheckBox
 import android.widget.EditText
@@ -39,6 +41,7 @@ import android.widget.PopupMenu
 import android.widget.Toast
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class HomeActivity : Activity() {
     private lateinit var store: Workspace
@@ -55,6 +58,14 @@ class HomeActivity : Activity() {
     private var hiddenPages = emptySet<Int>()
     private var pageVisibilityDraft: Set<Int>? = null
     private val visiblePages get() = layout.visiblePages(hiddenPages)
+    private var folderAnchor: Rect? = null
+    private var folderPresentation: FolderPresentation? = null
+    private val folderBlurEffects by lazy {
+        List(13) { level ->
+            val radius = dp(11) * level / 12f
+            if (level == 0) null else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+        }
+    }
     private var pageIndicatorVisible = false
     private val restoreSearch = Runnable {
         pageIndicatorVisible = false
@@ -294,6 +305,12 @@ class HomeActivity : Activity() {
 
     private fun render() {
         if (!::gesture.isInitialized || content.width == 0 || isFinishing) return
+        folderPresentation?.let {
+            it.card.animate().cancel()
+            it.title.animate().cancel()
+            it.backdropAnimator?.cancel()
+        }
+        folderPresentation = null
         content.removeAllViews()
         editToolbar?.let(root::removeView)
         editToolbar = null
@@ -331,8 +348,10 @@ class HomeActivity : Activity() {
         if (!editing && page !in visiblePages) {
             page = visiblePages.lastOrNull { it < page } ?: visiblePages.first()
         }
+        val homeLayer = FrameLayout(this)
+        content.addView(homeLayer, FrameLayout.LayoutParams(-1, -1))
         workspace = FrameLayout(this).apply { clipChildren = false }
-        content.addView(workspace, FrameLayout.LayoutParams(-1, -1))
+        homeLayer.addView(workspace, FrameLayout.LayoutParams(-1, -1))
         val totalWidth = content.width
         val totalHeight = content.height
         val horizontalMargin = dp(18)
@@ -358,13 +377,13 @@ class HomeActivity : Activity() {
             dockGrid = tiles
             tiles.populate(layout.tiles)
             dock.addView(tiles, FrameLayout.LayoutParams(width, dockHeight, Gravity.CENTER))
-            content.addView(dock, FrameLayout.LayoutParams(totalWidth - dp(32), dockHeight, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            homeLayer.addView(dock, FrameLayout.LayoutParams(totalWidth - dp(32), dockHeight, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
                 bottomMargin = dp(5)
             })
         }
-        footer(dockHeight)
+        footer(homeLayer, dockHeight)
         if (editing) drawEditToolbar()
-        folder?.let(::drawFolder)
+        folder?.let { drawFolder(it, homeLayer) }
         gesture.draw()
     }
 
@@ -522,11 +541,11 @@ class HomeActivity : Activity() {
         scheduleSearch(duration)
     }
 
-    private fun footer(dockHeight: Int) {
+    private fun footer(homeLayer: FrameLayout, dockHeight: Int) {
         val bar = horizontal().apply { gravity = Gravity.CENTER }
         homeFooter = bar
         fillFooter(bar)
-        content.addView(bar, FrameLayout.LayoutParams(-1, dp(42), Gravity.BOTTOM).apply {
+        homeLayer.addView(bar, FrameLayout.LayoutParams(-1, dp(42), Gravity.BOTTOM).apply {
             bottomMargin = dockHeight + dp(8)
         })
     }
@@ -665,11 +684,12 @@ class HomeActivity : Activity() {
         frame.setOnClickListener {
             when {
                 editing && tile.kind != TileKind.FOLDER -> tileMenu(frame, tile)
-                tile.kind == TileKind.FOLDER -> { folder = tile.id; render(); revealFolder() }
+                tile.kind == TileKind.FOLDER -> openFolder(tile, icon)
                 tile.key != null -> launch(tile.key, icon, null)
             }
         }
         frame.setOnLongClickListener { tileMenu(frame, tile); true }
+        if (tile.id == folder) frame.alpha = 0f
         if (editing && !reduced) frame.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             private val shake = ObjectAnimator.ofFloat(icon, View.ROTATION, -1.35f, 1.35f).apply {
                 duration = 165
@@ -733,7 +753,7 @@ class HomeActivity : Activity() {
         when {
             search || library -> { closeKeyboard(); invalidatePrivate(); search = false; library = false }
             pageVisibilityDraft != null -> pageVisibilityDraft = null
-            folder != null -> { closeFolder(); return }
+            folderPresentation != null -> { closeFolder(); return }
             editing -> editing = false
             page != visiblePages.first() -> page = visiblePages.first()
             else -> return
@@ -743,10 +763,31 @@ class HomeActivity : Activity() {
 
     private fun message(text: String) { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() }
 
-    private fun drawFolder(id: String) {
+    private class FolderPresentation(
+        val overlay: FrameLayout,
+        val backdrop: View,
+        val card: FrameLayout,
+        val title: View,
+        val openY: Float,
+        val collapsedX: Float,
+        val collapsedY: Float,
+        val collapsedScale: Float
+    ) {
+        var blurLevel = -1
+        var backdropAnimator: ValueAnimator? = null
+    }
+
+    private fun openFolder(tile: Tile, icon: View) {
+        val origin = IntArray(2).also(icon::getLocationOnScreen)
+        folderAnchor = Rect(origin[0], origin[1], origin[0] + icon.width, origin[1] + icon.height)
+        folder = tile.id
+        render()
+        revealFolder()
+    }
+
+    private fun drawFolder(id: String, homeLayer: FrameLayout) {
         val tile = layout.tiles.firstOrNull { it.id == id } ?: return
         val overlay = FrameLayout(this).apply {
-            setBackgroundColor(0x36091a34)
             setOnClickListener { closeFolder() }
         }
         val width = min((content.width * .76f).toInt(), dp(400))
@@ -780,30 +821,67 @@ class HomeActivity : Activity() {
             topMargin = ((content.height - height) / 2 - dp(77)).coerceAtLeast(0)
         })
         overlay.addView(card, FrameLayout.LayoutParams(-1, -1))
-        val radius = dp(11).toFloat()
-        val blur = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
-        for (index in 0 until content.childCount) {
-            content.getChildAt(index).apply {
-                setRenderEffect(blur)
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-            }
-        }
+        homeLayer.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         content.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        val origin = IntArray(2).also(content::getLocationOnScreen)
+        val anchor = folderAnchor
+        folderPresentation = FolderPresentation(
+            overlay, homeLayer, card, title, centerOffset.toFloat(),
+            if (anchor == null) 0f else anchor.exactCenterX() - origin[0] - content.width / 2f,
+            if (anchor == null) centerOffset.toFloat() else anchor.exactCenterY() - origin[1] - content.height / 2f,
+            ((anchor?.width() ?: width / 5).toFloat() / width).coerceIn(.12f, .5f)
+        ).also { setFolderBackdrop(it, folderBlurEffects.lastIndex) }
+    }
+
+    private fun setFolderBackdrop(presentation: FolderPresentation, level: Int) {
+        if (presentation.blurLevel == level) return
+        presentation.blurLevel = level
+        presentation.backdrop.setRenderEffect(folderBlurEffects[level])
+        val opacity = 0x36 * level / folderBlurEffects.lastIndex
+        presentation.overlay.setBackgroundColor((opacity shl 24) or 0x00091a34)
+    }
+
+    private fun animateFolderBackdrop(presentation: FolderPresentation, opening: Boolean, duration: Long) {
+        presentation.backdropAnimator?.cancel()
+        val initial = presentation.blurLevel
+        presentation.backdropAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            this.duration = duration
+            interpolator = LinearInterpolator()
+            addUpdateListener {
+                val progress = it.animatedFraction
+                val level = if (opening) {
+                    val remaining = 1f - (progress / .45f).coerceAtMost(1f)
+                    folderBlurEffects.lastIndex * (1f - remaining * remaining)
+                } else {
+                    initial * (1f - progress * progress)
+                }
+                setFolderBackdrop(presentation, level.roundToInt())
+            }
+            start()
+        }
     }
 
     private fun closeFolder() {
-        val id = folder ?: return
-        val overlay = content.getChildAt(content.childCount - 1) as? FrameLayout
-        val card = overlay?.getChildAt(0)
-        if (card == null || reduced) {
+        val presentation = folderPresentation
+        if (folder == null || presentation == null || reduced) {
             folder = null
+            folderAnchor = null
             render()
             return
         }
+        folder = null
+        folderAnchor = null
+        val card = presentation.card
+        val title = presentation.title
+        val duration = 205L
+        title.animate().cancel()
+        title.animate().alpha(0f).setStartDelay(0).setDuration(135).start()
+        animateFolderBackdrop(presentation, opening = false, duration = duration)
         card.animate().cancel()
-        card.animate().scaleX(.74f).scaleY(.74f).alpha(.3f).setDuration(160).withEndAction {
-            if (overlay.parent === content && folder == id) {
-                folder = null
+        card.animate().translationX(presentation.collapsedX).translationY(presentation.collapsedY)
+            .scaleX(presentation.collapsedScale).scaleY(presentation.collapsedScale)
+            .setInterpolator(PathInterpolator(.43f, .02f, .7f, .63f)).setDuration(duration).withEndAction {
+            if (presentation.overlay.parent === content && folderPresentation === presentation) {
                 render()
             }
         }.start()
@@ -811,11 +889,19 @@ class HomeActivity : Activity() {
 
     private fun revealFolder() {
         if (reduced) return
-        val card = (content.getChildAt(content.childCount - 1) as? FrameLayout)?.getChildAt(0) ?: return
-        card.scaleX = .72f
-        card.scaleY = .72f
-        card.alpha = .4f
-        card.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(240).start()
+        val presentation = folderPresentation ?: return
+        val card = presentation.card
+        val duration = 335L
+        card.translationX = presentation.collapsedX
+        card.translationY = presentation.collapsedY
+        card.scaleX = presentation.collapsedScale
+        card.scaleY = presentation.collapsedScale
+        presentation.title.alpha = 0f
+        setFolderBackdrop(presentation, 0)
+        animateFolderBackdrop(presentation, opening = true, duration = duration)
+        card.animate().translationX(0f).translationY(presentation.openY).scaleX(1f).scaleY(1f)
+            .setInterpolator(PathInterpolator(.22f, .45f, .28f, 1f)).setDuration(duration).start()
+        presentation.title.animate().alpha(1f).setStartDelay(90).setDuration(205).start()
     }
 
     private fun rename(tile: Tile) {
@@ -941,6 +1027,7 @@ class HomeActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (folderPresentation != null && folder == null) return true
         if (::gesture.isInitialized && !search && !library && pageVisibilityDraft == null && gesture.handle(event)) return true
         return super.dispatchTouchEvent(event)
     }

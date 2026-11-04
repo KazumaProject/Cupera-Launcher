@@ -176,14 +176,46 @@ class LauncherScreenTest {
                 touch(tap, MotionEvent.ACTION_DOWN, folderX, folderY)
                 touch(tap, MotionEvent.ACTION_UP, folderX, folderY)
                 waitFor(home) { views -> views.any {
-                    it.contentDescription == "Folder. Rename folder" && it.height > 0 && (it.parent as View).alpha == 1f
+                    it.contentDescription == "Folder. Rename folder" && it.height > 0 && it.alpha == 1f &&
+                        (it.parent as View).scaleX == 1f
                 } }
                 instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
                 waitFor(home) { views -> views.none { it.contentDescription == "Folder. Rename folder" } }
+                assertEquals(saved, workspace.read())
             } finally {
                 onMain { home.finish() }
                 val saved = workspace.read()
                 if (saved.revision == initial.revision + 1) assertTrue(workspace.save(saved.revision, initial.tiles))
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @Test fun backDuringFolderOpeningReturnsWithoutEditingPlacement() {
+        assumeTrue("Requires an isolated Home workspace",
+            InstrumentationRegistry.getArguments().getString("folderFixture") == "true")
+        Workspace(instrumentation.targetContext).use { store ->
+            val initial = store.read()
+            val (source, target) = initial.tiles.filter { it.isApp && it.slot.page == 0 && it.slot.folder.isEmpty() }.take(2)
+            val placed = requireNotNull(initial.move(source.id, target.slot, createFolder = true))
+            assertTrue(store.save(initial.revision, placed))
+            val saved = store.read()
+            var activity: Activity? = null
+            try {
+                val home = open(HomeActivity::class.java).also { activity = it }
+                waitFor(home) { views -> views.any { it.contentDescription == "Folder" && it.width > 0 } }
+                onMain {
+                    val views = descendants(home.window.decorView)
+                    assertTrue(views.first { it.contentDescription == "Folder" }.performClick())
+                    val title = views.first { it.contentDescription == "Folder. Rename folder" }
+                    assertTrue("Back must be sent before the folder is fully open", (title.parent as View).scaleX < 1f)
+                    home.onBackPressed()
+                }
+                waitFor(home) { views -> views.none { it.contentDescription == "Folder. Rename folder" } }
+                assertEquals(saved, store.read())
+            } finally {
+                activity?.let { home -> onMain { home.finish() } }
+                if (store.read().revision == saved.revision) assertTrue(store.save(saved.revision, initial.tiles))
             }
         }
     }
