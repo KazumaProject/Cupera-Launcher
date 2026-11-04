@@ -11,11 +11,13 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -126,6 +128,18 @@ class LauncherScreenTest {
                 assertFalse(names.contains("Chrome"))
             }
         } finally { onMain { home.finish() } }
+    }
+
+    @Test fun iconRequestsAfterTheLoaderClosesAreIgnored() {
+        val context = instrumentation.targetContext
+        val entry = Apps(context).entries().first { it.info.componentName.packageName == context.packageName }
+        onMain {
+            val loader = AppIcons()
+            val icon = ImageView(context)
+            loader.close()
+            loader.show(icon, entry)
+            assertNull(icon.drawable)
+        }
     }
 
     @Test fun relockingPrivateSpaceDuringSearchKeepsItsAppsOutOfResults() {

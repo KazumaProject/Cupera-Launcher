@@ -16,8 +16,10 @@ class AppIcons {
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private var generation = 0
+    private var closed = false
 
     fun show(view: ImageView, entry: Apps.Entry, square: Boolean = false) {
+        if (closed) return
         val density = view.resources.displayMetrics.densityDpi
         val key = Key(entry.key, density, square)
         val hit = cache.get(key)
@@ -49,7 +51,9 @@ class AppIcons {
     }
 
     fun close() {
+        closed = true
         invalidate()
+        main.removeCallbacksAndMessages(null)
         worker.shutdownNow()
     }
 }

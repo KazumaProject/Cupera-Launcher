@@ -89,6 +89,7 @@ class HomeActivity : Activity() {
     internal val icons = AppIcons()
     private val appWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var appGeneration = 0
+    private var closed = false
     private val newPackages = linkedSetOf<String>()
     private var packageRefreshPending = false
     private var renderedHome: HomeDisplay? = null
@@ -111,6 +112,7 @@ class HomeActivity : Activity() {
 
     private val profiles = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (closed) return
             val removed = intent.action == Intent.ACTION_PROFILE_REMOVED || intent.action == Intent.ACTION_MANAGED_PROFILE_REMOVED
             invalidatePrivate()
             if (removed && apps.hasHome()) reconcileProfiles()
@@ -120,12 +122,14 @@ class HomeActivity : Activity() {
 
     private val packages = object : LauncherApps.Callback() {
         override fun onPackageAdded(name: String, user: UserHandle) {
+            if (closed) return
             if (isPublicProfile(user)) {
                 icons.invalidate()
                 refreshApps(if (store.settingEnabled("add_new", false)) name else null, packagesChanged = true)
             } else invalidatePrivate()
         }
         override fun onPackageRemoved(name: String, user: UserHandle) {
+            if (closed) return
             if (!isPublicProfile(user)) { invalidatePrivate(); return }
             icons.invalidate()
             val manager = getSystemService(UserManager::class.java)
@@ -140,6 +144,7 @@ class HomeActivity : Activity() {
         override fun onPackagesAvailable(names: Array<out String>, user: UserHandle, replacing: Boolean) = changed(user)
         override fun onPackagesUnavailable(names: Array<out String>, user: UserHandle, replacing: Boolean) = changed(user)
         private fun changed(user: UserHandle) {
+            if (closed) return
             if (isPublicProfile(user)) {
                 icons.invalidate()
                 refreshApps(packagesChanged = true)
@@ -209,6 +214,7 @@ class HomeActivity : Activity() {
     override fun onStop() { widgets.stop(); super.onStop() }
 
     override fun onDestroy() {
+        closed = true
         appGeneration++
         appWorker.shutdownNow()
         icons.close()
@@ -259,13 +265,14 @@ class HomeActivity : Activity() {
     }
 
     private fun refreshApps(newPackage: String? = null, packagesChanged: Boolean = false) {
+        if (closed) return
         if (newPackage != null) newPackages.add(newPackage)
         packageRefreshPending = packageRefreshPending || packagesChanged
         val token = ++appGeneration
         appWorker.execute {
             val snapshot = apps.entries()
             handler.post {
-                if (token == appGeneration && !isDestroyed) publishApps(snapshot)
+                if (!closed && token == appGeneration) publishApps(snapshot)
             }
         }
     }
@@ -341,7 +348,7 @@ class HomeActivity : Activity() {
     }
 
     private fun render() {
-        if (!::gesture.isInitialized || content.width == 0 || isFinishing) return
+        if (closed || !::gesture.isInitialized || content.width == 0 || isFinishing) return
         renderedHome = if (search || library) null else homeDisplay()
         if (::workspace.isInitialized) workspace.animate().cancel()
         folderPresentation?.let {
@@ -806,6 +813,7 @@ class HomeActivity : Activity() {
     private fun closeKeyboard() { getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0) }
 
     private fun showBrowser(forSearch: Boolean) {
+        if (closed || isFinishing) return
         resetPageIndicator()
         editing = false
         folder = null
