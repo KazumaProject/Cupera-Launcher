@@ -90,6 +90,12 @@ class HomeActivity : Activity() {
     private val appWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var appGeneration = 0
     private val newPackages = linkedSetOf<String>()
+    private var packageRefreshPending = false
+    private var renderedHome: HomeDisplay? = null
+    private data class HomeDisplay(
+        val layoutRevision: Long, val hiddenPages: Set<Int>, val dark: Boolean,
+        val animationsEnabled: Boolean, val settings: Map<String, String>, val badges: Map<String, Int>
+    )
     private var layout = Layout(0, emptyList())
     private var page = 0
     private var editing = false
@@ -116,7 +122,7 @@ class HomeActivity : Activity() {
         override fun onPackageAdded(name: String, user: UserHandle) {
             if (isPublicProfile(user)) {
                 icons.invalidate()
-                refreshApps(if (store.settingEnabled("add_new", false)) name else null)
+                refreshApps(if (store.settingEnabled("add_new", false)) name else null, packagesChanged = true)
             } else invalidatePrivate()
         }
         override fun onPackageRemoved(name: String, user: UserHandle) {
@@ -128,7 +134,7 @@ class HomeActivity : Activity() {
                 it.key?.profile == serial && packageOf(it.key) == name
             }
             if (remaining.size != layout.tiles.size) commit(Layout.removeEmptyFolders(remaining))
-            refreshApps()
+            refreshApps(packagesChanged = true)
         }
         override fun onPackageChanged(name: String, user: UserHandle) = changed(user)
         override fun onPackagesAvailable(names: Array<out String>, user: UserHandle, replacing: Boolean) = changed(user)
@@ -136,7 +142,7 @@ class HomeActivity : Activity() {
         private fun changed(user: UserHandle) {
             if (isPublicProfile(user)) {
                 icons.invalidate()
-                refreshApps()
+                refreshApps(packagesChanged = true)
             } else invalidatePrivate()
         }
     }
@@ -222,9 +228,13 @@ class HomeActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.hasCategory(Intent.CATEGORY_HOME)) {
+            val alreadyAtHome = renderedHome != null && page == visiblePages.first() &&
+                !editing && pageVisibilityDraft == null && folder == null && folderPresentation == null &&
+                !search && !library && !gesture.active && !pageIndicatorVisible &&
+                previewView == null && (!::workspace.isInitialized || workspace.translationX == 0f)
             closeKeyboard()
             gesture.cancel()
-            page = 0
+            page = visiblePages.first()
             folder = null
             editing = false
             pageVisibilityDraft = null
@@ -232,7 +242,7 @@ class HomeActivity : Activity() {
             search = false
             resetPageIndicator()
             invalidatePrivate()
-            render()
+            if (!alreadyAtHome) render()
         }
     }
 
@@ -248,8 +258,9 @@ class HomeActivity : Activity() {
         if (remaining.size != layout.tiles.size) commit(Layout.removeEmptyFolders(remaining))
     }
 
-    private fun refreshApps(newPackage: String? = null) {
+    private fun refreshApps(newPackage: String? = null, packagesChanged: Boolean = false) {
         if (newPackage != null) newPackages.add(newPackage)
+        packageRefreshPending = packageRefreshPending || packagesChanged
         val token = ++appGeneration
         appWorker.execute {
             val snapshot = apps.entries()
@@ -260,7 +271,14 @@ class HomeActivity : Activity() {
     }
 
     private fun publishApps(snapshot: List<Apps.Entry>) {
-        if (entries.map(Apps.Entry::key) != snapshot.map(Apps.Entry::key)) icons.invalidate()
+        val catalogChanged = entries.size != snapshot.size || entries.indices.any { index ->
+            val previous = entries[index]
+            val next = snapshot[index]
+            previous.key != next.key || previous.title != next.title || previous.work != next.work
+        }
+        val packagesChanged = packageRefreshPending
+        packageRefreshPending = false
+        if (catalogChanged) icons.invalidate()
         entries = snapshot
         if (!store.settingEnabled("seeded", false) && entries.isNotEmpty()) {
             val personal = entries.filter { it.key.profile == apps.personalSerial }
@@ -277,10 +295,19 @@ class HomeActivity : Activity() {
         entries.filter { packageOf(it.key) in installed && it.key.profile == apps.personalSerial }.forEach {
             if (layout.tiles.none { tile -> tile.key == it.key }) addApp(it.key)
         }
-        if (gesture.active) gesture.cancel()
         val current = browser
+        // An unchanged resume can finish after a new gesture starts. Keep its views attached.
         if ((search || library) && current != null) current.updateEntries(entries)
-        else render()
+        else if (catalogChanged || packagesChanged || renderedHome != homeDisplay()) {
+            if (gesture.active) gesture.cancel()
+            render()
+        }
+    }
+
+    private fun homeDisplay(): HomeDisplay {
+        val settings = store.homeDisplaySettings()
+        return HomeDisplay(layout.revision, hiddenPages, darkMode, ValueAnimator.areAnimatorsEnabled(),
+            settings, if (settings["badges"] == "false") emptyMap() else BadgeListener.counts)
     }
 
     private fun invalidatePrivate() {
@@ -315,6 +342,7 @@ class HomeActivity : Activity() {
 
     private fun render() {
         if (!::gesture.isInitialized || content.width == 0 || isFinishing) return
+        renderedHome = if (search || library) null else homeDisplay()
         if (::workspace.isInitialized) workspace.animate().cancel()
         folderPresentation?.let {
             it.card.animate().cancel()

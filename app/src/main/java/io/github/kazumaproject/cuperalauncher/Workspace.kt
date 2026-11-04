@@ -42,6 +42,14 @@ class Workspace(context: Context, databaseName: String = "workspace.db") :
 
     fun settingEnabled(name: String, default: Boolean = true) = setting(name, default.toString()) == "true"
 
+    internal fun homeDisplaySettings(): Map<String, String> = readableDatabase.rawQuery(
+        """SELECT name, value FROM settings WHERE name IN
+            ('wallpaper', 'dock', 'search_button', 'page_dots', 'icon_size', 'labels', 'badges', 'widget_seconds', 'motion')""",
+        null
+    ).use { cursor ->
+        buildMap { while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1)) }
+    }
+
     fun hiddenPages(): Set<Int> = setting("hidden_pages").split(',')
         .mapNotNull { it.toIntOrNull()?.takeIf { page -> page in 0 until Layout.MAX_PAGES } }.toSet()
 
