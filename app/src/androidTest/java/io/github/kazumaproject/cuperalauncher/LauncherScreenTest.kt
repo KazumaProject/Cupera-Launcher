@@ -149,6 +149,15 @@ class LauncherScreenTest {
             val size = home.getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
             val x = size.width() * .5f
             val y = size.height() * .32f
+            fun homeLayer(): View {
+                var layer: View? = null
+                onMain {
+                    val footer = accessibleDescendants(home.window.decorView).filterIsInstance<TextView>()
+                        .first { it.text == "⌕  Search" }
+                    layer = (footer.parent as View).parent as View
+                }
+                return checkNotNull(layer)
+            }
             fun preview(): Long {
                 waitFor(home) { views ->
                     home.hasWindowFocus() && views.any { it is TextView && it.text == "⌕  Search" }
@@ -163,10 +172,13 @@ class LauncherScreenTest {
                 }
                 return down
             }
+            waitFor(home) { views -> views.any { it is TextView && it.text == "⌕  Search" } }
+            val initialLayer = homeLayer()
             val reversed = preview()
             touch(reversed, MotionEvent.ACTION_MOVE, x, y, automation)
             touch(reversed, MotionEvent.ACTION_UP, x, y, automation)
             waitFor(home) { views -> views.none { it is EditText && it.hint == "Search apps" } }
+            assertTrue(initialLayer === homeLayer())
 
             val interrupted = preview()
             onMain { home.onBackPressed() }

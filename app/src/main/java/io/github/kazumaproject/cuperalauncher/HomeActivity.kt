@@ -96,6 +96,17 @@ class HomeActivity : Activity() {
             if (step == 0) null else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
         }
     }
+    private class HomeReturn(val backdrop: View) {
+        var animator: ValueAnimator? = null
+    }
+    private var externalLaunchPending = false
+    private var homeReturn: HomeReturn? = null
+    private val returnBlurEffects by lazy {
+        List(8) { step ->
+            val radius = dp(14) * step / 7f
+            if (step == 0) null else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+        }
+    }
     private var entries = emptyList<Apps.Entry>()
     internal val icons = AppIcons()
     private val appWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -105,7 +116,7 @@ class HomeActivity : Activity() {
     private var packageRefreshPending = false
     private var renderedHome: HomeDisplay? = null
     private data class HomeDisplay(
-        val layoutRevision: Long, val hiddenPages: Set<Int>, val dark: Boolean,
+        val layoutRevision: Long, val hiddenPages: Set<Int>, val width: Int, val height: Int, val dark: Boolean,
         val animationsEnabled: Boolean, val settings: Map<String, String>, val badges: Map<String, Int>
     )
     private var layout = Layout(0, emptyList())
@@ -201,10 +212,23 @@ class HomeActivity : Activity() {
         if (android.os.Build.VERSION.SDK_INT >= 33) onBackInvokedDispatcher.registerOnBackInvokedCallback(0, ::back)
     }
 
-    override fun onStart() { super.onStart(); widgets.start() }
+    override fun onStart() {
+        super.onStart()
+        widgets.start()
+        val presentation = homeReturn ?: return
+        if (reduced || !apps.hasHome()) {
+            finishHomeReturn()
+            return
+        }
+        root.viewTreeObserver.registerFrameCommitCallback {
+            handler.post { settleHomeReturn(presentation) }
+        }
+        handler.postDelayed({ settleHomeReturn(presentation) }, 700)
+    }
 
     override fun onResume() {
         super.onResume()
+        externalLaunchPending = false
         val before = darkMode
         darkMode = dark(store)
         if (before != darkMode && browser != null) render()
@@ -217,15 +241,61 @@ class HomeActivity : Activity() {
 
     override fun onPause() {
         BadgeListener.changed = null
+        finishHomeReturn()
         gesture.cancel()
         invalidatePrivate()
         super.onPause()
     }
 
-    override fun onStop() { widgets.stop(); super.onStop() }
+    override fun onStop() {
+        widgets.stop()
+        super.onStop()
+        val launched = externalLaunchPending
+        externalLaunchPending = false
+        if (!launched || reduced || !apps.hasHome()) return
+        val backdrop = homeLayer ?: return
+        // Prepare our own surface while it is hidden, before Android reveals it again.
+        backdrop.setRenderEffect(returnBlurEffects.last())
+        homeReturn = HomeReturn(backdrop)
+    }
+
+    private fun settleHomeReturn(presentation: HomeReturn) {
+        if (homeReturn !== presentation || presentation.animator != null) return
+        if (reduced || !apps.hasHome()) {
+            finishHomeReturn()
+            return
+        }
+        presentation.animator = ValueAnimator.ofInt(returnBlurEffects.lastIndex, 0).apply {
+            duration = 190
+            var lastStep = returnBlurEffects.lastIndex
+            addUpdateListener {
+                val step = it.animatedValue as Int
+                if (step != lastStep) {
+                    lastStep = step
+                    presentation.backdrop.setRenderEffect(returnBlurEffects[step])
+                }
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    presentation.animator = null
+                    finishHomeReturn()
+                }
+            })
+        }
+        presentation.animator?.start()
+    }
+
+    private fun finishHomeReturn() {
+        val presentation = homeReturn ?: return
+        homeReturn = null
+        presentation.animator?.removeAllListeners()
+        presentation.animator?.cancel()
+        presentation.backdrop.setRenderEffect(null)
+    }
 
     override fun onDestroy() {
         closed = true
+        finishHomeReturn()
         stopSearchAnimation()
         appGeneration++
         appWorker.shutdownNow()
@@ -316,8 +386,10 @@ class HomeActivity : Activity() {
         }
         val current = browser
         // An unchanged resume can finish after a new gesture starts. Keep its views attached.
-        if ((search || library) && current != null) current.updateEntries(entries)
-        else if (catalogChanged || packagesChanged || renderedHome != homeDisplay()) {
+        if ((search || library) && current != null) {
+            if (catalogChanged || packagesChanged) renderedHome = null
+            current.updateEntries(entries)
+        } else if (catalogChanged || packagesChanged || renderedHome != homeDisplay()) {
             if (gesture.active) gesture.cancel()
             render()
         }
@@ -325,7 +397,8 @@ class HomeActivity : Activity() {
 
     private fun homeDisplay(): HomeDisplay {
         val settings = store.homeDisplaySettings()
-        return HomeDisplay(layout.revision, hiddenPages, darkMode, ValueAnimator.areAnimatorsEnabled(),
+        return HomeDisplay(layout.revision, hiddenPages, content.width, content.height,
+            darkMode, ValueAnimator.areAnimatorsEnabled(),
             settings, if (settings["badges"] == "false") emptyMap() else BadgeListener.counts)
     }
 
@@ -341,11 +414,15 @@ class HomeActivity : Activity() {
     }
 
     private fun reload() {
+        reloadWorkspace()
+        render()
+    }
+
+    private fun reloadWorkspace() {
         layout = store.read()
         hiddenPages = store.hiddenPages()
         if (layout.tiles.none { it.id == folder }) folder = null
         widgets.reconcile()
-        render()
     }
 
     private fun packageOf(key: AppKey) = key.component.substringBefore('/')
@@ -361,13 +438,14 @@ class HomeActivity : Activity() {
 
     private fun render() {
         if (closed || !::gesture.isInitialized || content.width == 0 || isFinishing) return
+        finishHomeReturn()
         if (searchClosing) search = false
         val backdrop = homeLayer?.takeIf { search && folderPresentation == null && editToolbar == null }
         val openingSearch = backdrop != null && searchPanel == null
         stopSearchAnimation()
         searchPanel = null
         searchClosing = false
-        renderedHome = if (search || library) null else homeDisplay()
+        if (backdrop == null) renderedHome = null
         if (::workspace.isInitialized) workspace.animate().cancel()
         folderPresentation?.let {
             it.card.animate().cancel()
@@ -384,7 +462,7 @@ class HomeActivity : Activity() {
         editToolbar?.let(root::removeView)
         editToolbar = null
         browser = null
-        homeFooter = null
+        if (backdrop == null) homeFooter = null
         folderGrid = null
         val systemWallpaper = store.setting("wallpaper", "tide") == "system"
         if (systemWallpaper) window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
@@ -400,6 +478,7 @@ class HomeActivity : Activity() {
             else controller.show(WindowInsets.Type.statusBars())
         }
         if (pageVisibilityDraft != null) {
+            renderedHome = homeDisplay()
             drawPageEditor()
             drawEditToolbar()
             return
@@ -432,6 +511,7 @@ class HomeActivity : Activity() {
         if (!editing && page !in visiblePages) {
             page = visiblePages.lastOrNull { it < page } ?: visiblePages.first()
         }
+        renderedHome = homeDisplay()
         val homeLayer = FrameLayout(this).apply { clipChildren = false }
         this.homeLayer = homeLayer
         content.addView(homeLayer, FrameLayout.LayoutParams(-1, -1))
@@ -857,7 +937,10 @@ class HomeActivity : Activity() {
 
     private fun launch(key: AppKey, anchor: View, user: UserHandle?) {
         closeKeyboard()
-        if (!apps.launch(key, anchor, !reduced, user)) message("This app is unavailable.")
+        if (apps.launch(key, anchor, !reduced, user)) {
+            externalLaunchPending = !editing && !search && !library && folderPresentation == null &&
+                key.component.substringBefore('/') != packageName
+        } else message("This app is unavailable.")
     }
 
     private fun closeKeyboard() { getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0) }
@@ -919,13 +1002,32 @@ class HomeActivity : Activity() {
     private fun finishSearch() {
         stopSearchAnimation()
         search = false
-        reload()
+        reloadWorkspace()
+        val backdrop = homeLayer
+        val panel = searchPanel
+        if (backdrop == null || panel == null || renderedHome != homeDisplay() ||
+            backdrop.width != content.width || backdrop.height != content.height) {
+            render()
+            return
+        }
+        searchPanel = null
+        searchClosing = false
+        searchProgress = 0f
+        browser = null
+        content.removeView(panel)
+        backdrop.setRenderEffect(null)
+        backdrop.background = null
+        backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+        backdrop.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
+        systemBars(root, true, keepStatusInset = true)
+        homeFooter?.let(::fillFooter)
     }
 
     @Deprecated("Back on Android 12")
     override fun onBackPressed() = back()
 
     private fun back() {
+        finishHomeReturn()
         when {
             gesture.previewingSearch -> {
                 gesture.cancel()
@@ -1250,6 +1352,7 @@ class HomeActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) finishHomeReturn()
         if (searchClosing && event.actionMasked == MotionEvent.ACTION_DOWN) finishSearch()
         if (folderPresentation != null && folder == null) return true
         if (::gesture.isInitialized && (!search || gesture.previewingSearch) &&
