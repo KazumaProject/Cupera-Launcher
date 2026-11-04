@@ -1,0 +1,31 @@
+plugins {
+    id 'com.android.application' version '8.10.1'
+    id 'org.jetbrains.kotlin.android' version '2.2.10'
+}
+
+android {
+    namespace 'io.github.kazumaproject.cuperalauncher'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'io.github.kazumaproject.cuperalauncher'
+        minSdk 31
+        targetSdk 36
+        versionCode 1
+        versionName '1.0.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+kotlin { jvmToolchain(17) }
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'junit:junit:4.13.2'
+}
