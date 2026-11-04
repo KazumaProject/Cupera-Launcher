@@ -12,7 +12,9 @@ import java.util.concurrent.Executors
 
 class AppIcons {
     private data class Key(val app: AppKey, val density: Int, val square: Boolean)
+    private data class SourceKey(val app: AppKey, val density: Int, val generation: Int)
     private val cache = LruCache<Key, Drawable.ConstantState>(160)
+    private val sources = LruCache<SourceKey, Drawable.ConstantState>(160)
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private var generation = 0
@@ -30,7 +32,13 @@ class AppIcons {
         val token = generation
         worker.execute {
             val drawable = runCatching {
-                val original = entry.info.getBadgedIcon(density)
+                // Home and Search can use different shapes for the same source icon.
+                // A worker finishing after invalidation can only populate its old generation.
+                val source = SourceKey(entry.key, density, token)
+                val original = sources.get(source)?.newDrawable(view.resources)?.mutate()
+                    ?: entry.info.getBadgedIcon(density).also {
+                        it.constantState?.let { state -> sources.put(source, state) }
+                    }
                 if (square && original is AdaptiveIconDrawable) {
                     LayerDrawable(listOfNotNull(original.background, original.foreground)
                         .map { InsetDrawable(it, -.25f) }.toTypedArray())
@@ -48,6 +56,7 @@ class AppIcons {
     fun invalidate() {
         generation++
         cache.evictAll()
+        sources.evictAll()
     }
 
     fun close() {
