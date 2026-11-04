@@ -1110,7 +1110,7 @@ class HomeActivity : Activity() {
         page = index
         folder = null
         render()
-        val duration = if (!reduced && !gesture.active) 225L else 0L
+        val duration = if (!reduced && !gesture.active) 320L else 0L
         if (duration > 0) {
             showPagePreview(previous, -direction)
             workspace.translationX = offset
