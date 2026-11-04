@@ -927,6 +927,10 @@ class HomeActivity : Activity() {
 
     private fun back() {
         when {
+            gesture.previewingSearch -> {
+                gesture.cancel()
+                return
+            }
             searchPanel != null -> {
                 if (searchClosing) return
                 closeKeyboard()

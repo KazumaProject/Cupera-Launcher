@@ -168,6 +168,11 @@ class LauncherScreenTest {
             touch(reversed, MotionEvent.ACTION_UP, x, y, automation)
             waitFor(home) { views -> views.none { it is EditText && it.hint == "Search apps" } }
 
+            val interrupted = preview()
+            onMain { home.onBackPressed() }
+            touch(interrupted, MotionEvent.ACTION_UP, x, y + size.height() * .15f, automation)
+            waitFor(home) { views -> views.none { it is EditText && it.hint == "Search apps" } }
+
             val committed = preview()
             touch(committed, MotionEvent.ACTION_UP, x, y + size.height() * .15f, automation)
             waitFor(home) { views -> views.any { it is EditText && it.hint == "Search apps" && it.hasFocus() } }
