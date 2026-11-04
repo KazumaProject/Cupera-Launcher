@@ -48,6 +48,7 @@ import kotlin.math.roundToInt
 
 private const val FOLDER_PAGE_SIZE = 9
 private const val RETURN_FADE_START = .72f
+private const val RETURN_FRAME_WAIT_MS = 120L
 
 class HomeActivity : Activity() {
     private lateinit var store: Workspace
@@ -113,6 +114,7 @@ class HomeActivity : Activity() {
         }
     }
     private class HomeReturn(val backdrop: View, val fade: Boolean) {
+        var start: Runnable? = null
         var animator: ValueAnimator? = null
     }
     private var externalLaunchPending = false
@@ -241,10 +243,15 @@ class HomeActivity : Activity() {
             finishHomeReturn()
             return
         }
-        root.viewTreeObserver.registerFrameCommitCallback {
-            handler.post { settleHomeReturn(presentation) }
+        val start = Runnable { settleHomeReturn(presentation) }
+        presentation.start = start
+        if (root.isHardwareAccelerated) {
+            root.viewTreeObserver.registerFrameCommitCallback { handler.post(start) }
+        } else {
+            // Software-rendered windows do not produce a frame commit callback.
+            root.postOnAnimation(start)
         }
-        handler.postDelayed({ settleHomeReturn(presentation) }, 700)
+        handler.postDelayed(start, RETURN_FRAME_WAIT_MS)
     }
 
     override fun onResume() {
@@ -290,6 +297,7 @@ class HomeActivity : Activity() {
 
     private fun settleHomeReturn(presentation: HomeReturn) {
         if (homeReturn !== presentation || presentation.animator != null) return
+        clearHomeReturnStart(presentation)
         if (!canSettleHomeReturn(presentation)) {
             finishHomeReturn()
             return
@@ -325,10 +333,18 @@ class HomeActivity : Activity() {
     private fun finishHomeReturn() {
         val presentation = homeReturn ?: return
         homeReturn = null
+        clearHomeReturnStart(presentation)
         presentation.animator?.removeAllListeners()
         presentation.animator?.cancel()
         if (presentation.fade) presentation.backdrop.alpha = 1f
         else presentation.backdrop.setRenderEffect(null)
+    }
+
+    private fun clearHomeReturnStart(presentation: HomeReturn) {
+        val start = presentation.start ?: return
+        presentation.start = null
+        root.removeCallbacks(start)
+        handler.removeCallbacks(start)
     }
 
     override fun onDestroy() {
