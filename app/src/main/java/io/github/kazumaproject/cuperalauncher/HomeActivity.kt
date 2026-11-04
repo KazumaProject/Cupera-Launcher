@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.LauncherApps
 import android.graphics.Color
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.graphics.Rect
 import android.graphics.drawable.InsetDrawable
 import android.os.Bundle
@@ -642,30 +644,48 @@ class HomeActivity : Activity() {
     private fun drawFolder(id: String) {
         val tile = layout.tiles.firstOrNull { it.id == id } ?: return
         val overlay = FrameLayout(this).apply {
-            setBackgroundColor(0x88091a34.toInt())
+            setBackgroundColor(0x36091a34)
             setOnClickListener { closeFolder() }
         }
-        val card = vertical().apply {
-            setPadding(dp(12), dp(7), dp(12), dp(12))
-            background = rounded(0xe6334b68.toInt(), dp(30).toFloat(), 0x64ffffff)
+        val width = min((content.width * .76f).toInt(), dp(400))
+        val height = min((width * 1.13f).toInt(), content.height * 3 / 4)
+        val inset = dp(14)
+        val children = layout.tiles.filter { it.slot.folder == id }
+        val rows = maxOf(3, (children.maxOfOrNull { it.slot.cell } ?: 0) / 3 + 1)
+        val gridHeight = rows * maxOf(dp(64), (height - inset * 2) / 3)
+        val tiles = TileGrid(this, 0, id, width - inset * 2, gridHeight, 3, rows, ::tileView)
+        tiles.populate(children)
+        folderGrid = tiles
+        val panel = FrameLayout(this).apply {
+            setPadding(inset, inset, inset, inset)
+            background = rounded(0x42dcefff, dp(34).toFloat(), 0x64ffffff)
+            clipToOutline = true
             isClickable = true
         }
+        panel.addView(android.widget.ScrollView(this).apply {
+            addView(tiles, FrameLayout.LayoutParams(-1, gridHeight))
+        }, FrameLayout.LayoutParams(-1, -1))
+        val centerOffset = (root.paddingBottom - root.paddingTop) / 2
+        val card = FrameLayout(this).apply { translationY = centerOffset.toFloat() }
+        card.addView(panel, FrameLayout.LayoutParams(width, height, Gravity.CENTER))
         val title = label(tile.name, 22f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER
-            minHeight = dp(52)
+            minHeight = dp(48)
             setOnClickListener { rename(tile) }
             contentDescription = "${tile.name}. Rename folder"
         }
-        card.addView(title)
-        val width = min(content.width - dp(36), dp(400))
-        val rows = maxOf(2, (layout.tiles.filter { it.slot.folder == id }.maxOfOrNull { it.slot.cell } ?: 0) / 4 + 1)
-        val height = rows * dp(84)
-        val tiles = TileGrid(this, 0, id, width - dp(24), height, 4, rows, ::tileView)
-        tiles.populate(layout.tiles)
-        folderGrid = tiles
-        card.addView(android.widget.ScrollView(this).apply { addView(tiles, FrameLayout.LayoutParams(-1, height)) },
-            LinearLayout.LayoutParams(-1, min(height, content.height / 2)))
-        overlay.addView(card, FrameLayout.LayoutParams(width, -2, Gravity.CENTER))
+        card.addView(title, FrameLayout.LayoutParams(width, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = ((content.height - height) / 2 - dp(77)).coerceAtLeast(0)
+        })
+        overlay.addView(card, FrameLayout.LayoutParams(-1, -1))
+        val radius = dp(11).toFloat()
+        val blur = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+        for (index in 0 until content.childCount) {
+            content.getChildAt(index).apply {
+                setRenderEffect(blur)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            }
+        }
         content.addView(overlay, FrameLayout.LayoutParams(-1, -1))
     }
 

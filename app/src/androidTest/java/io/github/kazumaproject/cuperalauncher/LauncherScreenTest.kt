@@ -169,9 +169,15 @@ class LauncherScreenTest {
                 assertEquals(initial.revision + 1, saved.revision)
                 onMain {
                     descendants(home.window.decorView).filterIsInstance<TextView>().first { it.text == "Done" }.performClick()
-                    descendants(home.window.decorView).first { it.contentDescription == "Folder" }.performClick()
                 }
-                waitFor(home) { views -> views.any { it.contentDescription == "Folder. Rename folder" } }
+                waitFor(home) { views -> views.any { it.contentDescription == "Folder" && it.width > 0 } }
+                val (folderX, folderY) = screenCenter(home, "Folder")
+                val tap = SystemClock.uptimeMillis()
+                touch(tap, MotionEvent.ACTION_DOWN, folderX, folderY)
+                touch(tap, MotionEvent.ACTION_UP, folderX, folderY)
+                waitFor(home) { views -> views.any {
+                    it.contentDescription == "Folder. Rename folder" && it.height > 0 && (it.parent as View).alpha == 1f
+                } }
                 instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
                 waitFor(home) { views -> views.none { it.contentDescription == "Folder. Rename folder" } }
             } finally {
@@ -204,7 +210,7 @@ class LauncherScreenTest {
         val down = SystemClock.uptimeMillis()
         touch(down, MotionEvent.ACTION_DOWN, from.first, from.second, automation)
         for (sample in 1..24) {
-            SystemClock.sleep(maxOf(0L, down + 50 + sample * 650 / 24 - SystemClock.uptimeMillis()))
+            SystemClock.sleep(maxOf(0L, down + 180 + sample * 650 / 24 - SystemClock.uptimeMillis()))
             val x = from.first + (to.first - from.first) * sample / 24
             val y = from.second + (to.second - from.second) * sample / 24
             touch(down, MotionEvent.ACTION_MOVE, x, y, automation, sync = false)
