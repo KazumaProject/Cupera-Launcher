@@ -13,6 +13,7 @@ import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Rect
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
@@ -654,6 +655,12 @@ class HomeActivity : Activity() {
         val size = min(dp(baseSize), min(cellWidth - dp(12), cellHeight - if (showLabel) dp(22) else dp(7))).coerceAtLeast(dp(25))
         icon.background = rounded(0x68d2eaff, size * .25f, 0x70ffffff)
         icon.clipToOutline = true
+        if (!editing && tile.key != null) {
+            icon.foreground = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed), ColorDrawable(0x66000000))
+                addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+            }
+        }
         if (tile.kind == TileKind.FOLDER) {
             val folderTiles = layout.tiles.filter { it.slot.folder == tile.id }.sortedBy { it.slot.cell }.take(9)
             val mini = size / 5
