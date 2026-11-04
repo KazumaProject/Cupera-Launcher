@@ -1,6 +1,7 @@
 package io.github.kazumaproject.cuperalauncher
 
 enum class TileKind { APP, SHORTCUT, FOLDER, WIDGET, CLOCK, DATE }
+internal enum class DockEdge { START, END }
 
 data class AppKey(val component: String, val profile: Long, val shortcut: String = "")
 
@@ -92,6 +93,18 @@ data class Layout(val revision: Long, val tiles: List<Tile>) {
         }
         result.add(moving.copy(slot = destination))
         return removeEmptyFolders(result).takeIf(::valid)
+    }
+
+    internal fun moveToDockEdge(id: String, edge: DockEdge): List<Tile>? {
+        val moving = tiles.firstOrNull { it.id == id && !it.isWidget } ?: return null
+        val current = tiles.filter { it.slot.page == Slot.DOCK }.sortedBy { it.slot.cell }
+        val others = current.filterNot { it.id == id }
+        if (others.size >= Slot(Slot.DOCK, 0).capacity) return null
+        val ordered = if (edge == DockEdge.START) listOf(moving) + others else others + moving
+        if (ordered == current) return null
+        val outsideDock = tiles.filter { it.slot.page != Slot.DOCK && it.id != id }
+        val dock = ordered.mapIndexed { cell, tile -> tile.copy(slot = Slot(Slot.DOCK, cell)) }
+        return removeEmptyFolders(outsideDock + dock).takeIf(::valid)
     }
 
     companion object {

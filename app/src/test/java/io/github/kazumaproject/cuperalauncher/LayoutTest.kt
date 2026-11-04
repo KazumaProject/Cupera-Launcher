@@ -25,6 +25,24 @@ class LayoutTest {
         assertNotNull(changed.at(Slot(0, 0)))
     }
 
+    @Test fun insertingAtEitherDockEdgePreservesTheOrderOfExistingApps() {
+        val original = Layout(0, listOf(app("a", 0, Slot.DOCK), app("b", 3, Slot.DOCK), app("c", 1)))
+        val before = requireNotNull(original.moveToDockEdge("c", DockEdge.START))
+        val after = requireNotNull(original.moveToDockEdge("c", DockEdge.END))
+        assertEquals(listOf("c", "a", "b"), before.sortedBy { it.slot.cell }.map { it.id })
+        assertEquals(listOf("a", "b", "c"), after.sortedBy { it.slot.cell }.map { it.id })
+        assertTrue(before.all { it.slot.page == Slot.DOCK })
+        assertTrue(after.all { it.slot.page == Slot.DOCK })
+        assertEquals(Slot(0, 1), original.tiles.last().slot)
+    }
+
+    @Test fun droppingAnExtraAppAtTheEdgeOfAFullDockIsRejected() {
+        val dock = (0 until 4).map { app("dock$it", it, Slot.DOCK) }
+        val original = Layout(0, dock + app("home", 1))
+        assertNull(original.moveToDockEdge("home", DockEdge.START))
+        assertNull(original.moveToDockEdge("home", DockEdge.END))
+    }
+
     @Test fun folderCreatesMovesAndDisappearsWhenEmpty() {
         val original = Layout(0, listOf(app("a", 0), app("b", 1)))
         val folderLayout = Layout(1, requireNotNull(original.move("a", Slot(0, 1), true)))

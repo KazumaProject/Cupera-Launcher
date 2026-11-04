@@ -794,12 +794,26 @@ class HomeActivity : Activity() {
         private val heightPerCell = gridHeight / rows
         private val tileViews = mutableMapOf<String, Pair<Tile, View>>()
 
+        private fun dockStart(count: Int) = (gridWidth - count * widthPerCell) / 2
+
+        private fun dockPositions(tiles: Collection<Tile>): Map<String, Int> {
+            if (page != Slot.DOCK) return emptyMap()
+            val dock = tiles.filter { it.slot.page == Slot.DOCK }.sortedBy { it.slot.cell }
+            return dock.mapIndexed { index, tile -> tile.id to (dockStart(dock.size) + index * widthPerCell) }.toMap()
+        }
+
         fun preview(tiles: List<Tile>, dragging: String?, reduced: Boolean) {
             val destinations = tiles.associateBy { it.id }
+            val originalDock = dockPositions(tileViews.values.map { it.first })
+            val projectedDock = dockPositions(tiles)
             tileViews.values.forEach { (original, view) ->
                 val target = destinations[original.id]?.slot
                 val offset = target?.takeIf { it.page == page && it.folder == folder }
-                val dx = if (offset == null) 0f else ((offset.cell % columns - original.slot.cell % columns) * widthPerCell).toFloat()
+                val dx = when {
+                    offset == null -> 0f
+                    page == Slot.DOCK -> (projectedDock.getValue(original.id) - originalDock.getValue(original.id)).toFloat()
+                    else -> ((offset.cell % columns - original.slot.cell % columns) * widthPerCell).toFloat()
+                }
                 val dy = if (offset == null) 0f else ((offset.cell / columns - original.slot.cell / columns) * heightPerCell).toFloat()
                 val alpha = if (original.id == dragging) .25f else 1f
                 view.animate().cancel()
@@ -812,12 +826,13 @@ class HomeActivity : Activity() {
         }
 
         fun populate(tiles: List<Tile>) {
+            val dock = dockPositions(tiles)
             tiles.filter { it.slot.page == page && it.slot.folder == folder }.forEach {
                 val gap = if (it.isWidget) context.dp(4) else 0
                 val child = viewFactory(it, widthPerCell, heightPerCell)
                 tileViews[it.id] = it to child
                 addView(child, LayoutParams(widthPerCell * it.width - 2 * gap, heightPerCell * it.height - 2 * gap).apply {
-                        leftMargin = it.slot.cell % columns * widthPerCell + gap
+                        leftMargin = (dock[it.id] ?: (it.slot.cell % columns * widthPerCell)) + gap
                         topMargin = it.slot.cell / columns * heightPerCell + gap
                     })
             }
@@ -839,12 +854,32 @@ class HomeActivity : Activity() {
             val window = IntArray(2).also(::getLocationOnScreen)
             val localX = x - window[0]
             val localY = y - window[1]
+            if (page == Slot.DOCK) {
+                val dock = tileViews.values.map { it.first }.sortedBy { it.slot.cell }
+                val offset = localX - dockStart(dock.size)
+                return if (offset < 0) null else dock.getOrNull(offset.toInt() / widthPerCell)?.slot
+            }
             if (localX < 0 || localY < 0 || localX >= widthPerCell * columns || localY >= heightPerCell * rows) return null
             return Slot(page, localY.toInt() / heightPerCell * columns + localX.toInt() / widthPerCell, folder)
+        }
+
+        fun dockEdge(x: Float, y: Float): DockEdge? {
+            if (page != Slot.DOCK || tileViews.size == columns || !contains(this, x, y)) return null
+            val localX = x - IntArray(2).also(::getLocationOnScreen)[0]
+            val start = dockStart(tileViews.size)
+            return when {
+                localX < start -> DockEdge.START
+                localX >= start + tileViews.size * widthPerCell -> DockEdge.END
+                else -> null
+            }
         }
     }
 
     private class HomeGesture(private val host: HomeActivity) {
+        private sealed interface Drop {
+            data class Cell(val slot: Slot) : Drop
+            data class DockMargin(val edge: DockEdge) : Drop
+        }
         private val slop = ViewConfiguration.get(host).scaledTouchSlop
         private val holdSlop = slop / 2f
         private var startX = 0f
@@ -856,7 +891,7 @@ class HomeActivity : Activity() {
         private var verticalScroll = false
         private var emptyHold = false
         private var revision = 0L
-        private var candidate: Slot? = null
+        private var candidate: Drop? = null
         private var hoverTime = 0L
         private var edge = 0
         private var origin: Tile? = null
@@ -880,6 +915,16 @@ class HomeActivity : Activity() {
         private fun slot(x: Float, y: Float): Slot? {
             return if (host.folder != null) host.folderGrid?.slot(x, y)
             else host.dockGrid?.slot(x, y) ?: host.grid?.slot(x, y)
+        }
+
+        private fun drop(x: Float, y: Float): Drop? {
+            if (host.folder == null) host.dockGrid?.dockEdge(x, y)?.let { return Drop.DockMargin(it) }
+            return slot(x, y)?.let { Drop.Cell(it) }
+        }
+
+        private fun move(tile: Tile, destination: Drop, merge: Boolean = false): List<Tile>? = when (destination) {
+            is Drop.Cell -> host.layout.move(tile.id, destination.slot, merge)
+            is Drop.DockMargin -> host.layout.moveToDockEdge(tile.id, destination.edge)
         }
 
         fun handle(event: MotionEvent): Boolean {
@@ -955,12 +1000,12 @@ class HomeActivity : Activity() {
                     }
                     val tile = dragged
                     if (tile != null) {
-                        val destination = slot(x, y)
+                        val destination = drop(x, y)
                         val merge = destination == candidate && android.os.SystemClock.uptimeMillis() - hoverTime >= 420 &&
                             host.store.settingEnabled("folder_drop")
                         cancel()
                         if (destination != null) {
-                            host.layout.move(tile.id, destination, merge)?.let { host.commit(it, revision) }
+                            move(tile, destination, merge)?.let { host.commit(it, revision) }
                         }
                         return true
                     }
@@ -979,7 +1024,7 @@ class HomeActivity : Activity() {
         }
 
         private fun updateDrag() {
-            val destination = slot(x, y)
+            val destination = drop(x, y)
             if (destination != candidate) {
                 candidate = destination
                 hoverTime = android.os.SystemClock.uptimeMillis()
@@ -1007,7 +1052,7 @@ class HomeActivity : Activity() {
 
         private fun preview() {
             val tile = dragged
-            val provisional = candidate?.let { slot -> tile?.let { host.layout.move(it.id, slot) } }
+            val provisional = candidate?.let { drop -> tile?.let { move(it, drop) } }
             listOfNotNull(host.grid, host.dockGrid, host.folderGrid).forEach {
                 it.preview(provisional ?: host.layout.tiles, tile?.id, host.reduced)
             }
