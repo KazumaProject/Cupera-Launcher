@@ -25,6 +25,7 @@ import android.os.UserManager
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -540,6 +541,7 @@ class HomeActivity : Activity() {
             it.backdropAnimator?.cancel()
         }
         folderPresentation = null
+        if (folder == null) folderAnchor = null
         homeLayer = backdrop
         openedFolderTile = null
         if (backdrop == null) content.removeAllViews()
@@ -1294,6 +1296,7 @@ class HomeActivity : Activity() {
     private fun message(text: String) { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() }
 
     private class FolderPresentation(
+        val id: String,
         val overlay: FrameLayout,
         val backdrop: View,
         val card: FrameLayout,
@@ -1305,6 +1308,7 @@ class HomeActivity : Activity() {
     ) {
         var blurLevel = -1
         var backdropAnimator: ValueAnimator? = null
+        var reopenTap: GestureDetector? = null
     }
 
     private fun openFolder(tile: Tile, frame: View, icon: View) {
@@ -1398,7 +1402,7 @@ class HomeActivity : Activity() {
         val origin = IntArray(2).also(content::getLocationOnScreen)
         val anchor = folderAnchor
         folderPresentation = FolderPresentation(
-            overlay, homeLayer, card, title, centerOffset.toFloat(),
+            id, overlay, homeLayer, card, title, centerOffset.toFloat(),
             if (anchor == null) 0f else anchor.exactCenterX() - origin[0] - content.width / 2f,
             if (anchor == null) centerOffset.toFloat() else anchor.exactCenterY() - origin[1] - content.height / 2f,
             ((anchor?.width() ?: width / 5).toFloat() / width).coerceIn(.12f, .5f)
@@ -1428,7 +1432,7 @@ class HomeActivity : Activity() {
                     initial + (target - initial) * progress
                 } else if (opening) {
                     val remaining = 1f - (progress / .45f).coerceAtMost(1f)
-                    folderBlurEffects.lastIndex * (1f - remaining * remaining)
+                    initial + (folderBlurEffects.lastIndex - initial) * (1f - remaining * remaining)
                 } else {
                     initial * (1f - progress * progress)
                 }
@@ -1440,12 +1444,30 @@ class HomeActivity : Activity() {
 
     private fun closeFolder() {
         val presentation = folderPresentation ?: return
-        val animate = folder != null && ValueAnimator.areAnimatorsEnabled()
+        if (folder == null) return
         folder = null
-        folderAnchor = null
-        if (!animate) {
+        if (!ValueAnimator.areAnimatorsEnabled()) {
             dismissFolder(presentation)
             return
+        }
+        folderAnchor?.let { anchor ->
+            presentation.reopenTap = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+                private var downOnAnchor = false
+
+                override fun onDown(event: MotionEvent): Boolean {
+                    downOnAnchor = anchor.contains(event.rawX.toInt(), event.rawY.toInt())
+                    return downOnAnchor
+                }
+
+                override fun onSingleTapUp(event: MotionEvent): Boolean {
+                    if (!downOnAnchor || folderPresentation !== presentation || folder != null ||
+                        !anchor.contains(event.rawX.toInt(), event.rawY.toInt())) return false
+                    folder = presentation.id
+                    presentation.reopenTap = null
+                    revealFolder(fromCurrentFrame = true)
+                    return true
+                }
+            })
         }
         val card = presentation.card
         val title = presentation.title
@@ -1479,32 +1501,45 @@ class HomeActivity : Activity() {
         openedFolderTile?.alpha = 1f
         openedFolderTile = null
         folderPresentation = null
+        folderAnchor = null
         folderGrid = null
         folderPager = null
     }
 
-    private fun revealFolder() {
-        if (!ValueAnimator.areAnimatorsEnabled()) return
+    private fun revealFolder(fromCurrentFrame: Boolean = false) {
         val presentation = folderPresentation ?: return
         val card = presentation.card
-        val duration = 335L
+        if (!ValueAnimator.areAnimatorsEnabled() && !fromCurrentFrame) return
+        if (fromCurrentFrame) {
+            card.animate().cancel()
+            presentation.title.animate().cancel()
+        }
         if (reduced) {
-            card.alpha = 0f
-            setFolderBackdrop(presentation, 0)
+            if (!fromCurrentFrame) {
+                card.alpha = 0f
+                setFolderBackdrop(presentation, 0)
+            }
+            val duration = (335 * (1f - card.alpha)).roundToInt().coerceAtLeast(1).toLong()
             animateFolderBackdrop(presentation, opening = true, duration = duration, linearFade = true)
             card.animate().alpha(1f).setInterpolator(LinearInterpolator()).setDuration(duration).start()
             return
         }
-        card.translationX = presentation.collapsedX
-        card.translationY = presentation.collapsedY
-        card.scaleX = presentation.collapsedScale
-        card.scaleY = presentation.collapsedScale
-        presentation.title.alpha = 0f
-        setFolderBackdrop(presentation, 0)
+        if (!fromCurrentFrame) {
+            card.translationX = presentation.collapsedX
+            card.translationY = presentation.collapsedY
+            card.scaleX = presentation.collapsedScale
+            card.scaleY = presentation.collapsedScale
+            presentation.title.alpha = 0f
+            setFolderBackdrop(presentation, 0)
+        }
+        val remaining = ((1f - card.scaleX) / (1f - presentation.collapsedScale)).coerceIn(0f, 1f)
+        val duration = (335 * remaining).roundToInt().coerceAtLeast(1).toLong()
         animateFolderBackdrop(presentation, opening = true, duration = duration)
         card.animate().translationX(0f).translationY(presentation.openY).scaleX(1f).scaleY(1f)
             .setInterpolator(PathInterpolator(.22f, .45f, .28f, 1f)).setDuration(duration).start()
-        presentation.title.animate().alpha(1f).setStartDelay(90).setDuration(205).start()
+        presentation.title.animate().alpha(1f)
+            .setStartDelay(if (fromCurrentFrame) 0 else 90)
+            .setDuration(minOf(205, duration)).start()
     }
 
     private fun rename(tile: Tile) {
@@ -1680,7 +1715,12 @@ class HomeActivity : Activity() {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) finishHomeReturn()
         if (searchClosing && event.actionMasked == MotionEvent.ACTION_DOWN) finishSearch()
-        if (folderPresentation != null && folder == null) return true
+        folderPresentation?.let { presentation ->
+            if (folder == null) {
+                presentation.reopenTap?.onTouchEvent(event)
+                return true
+            }
+        }
         if (library && libraryMotion?.let { handleLibraryReturn(it, event) } == true) return true
         if (::gesture.isInitialized && (!search || gesture.previewingSearch) &&
             !library && pageVisibilityDraft == null && gesture.handle(event)) return true
