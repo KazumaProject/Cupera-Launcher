@@ -409,7 +409,8 @@ class HomeActivity : Activity() {
                 onBack = ::back, onLibrary = { showBrowser(false) }, onAdd = ::addApp, onPrivate = { privateOpen = it },
                 onLaunch = { key, anchor, user -> launch(key, anchor, user) })
             browser = panel
-            val view = panel.view(search, useHomeBackdrop = backdrop != null)
+            val view = panel.view(search, useHomeBackdrop = backdrop != null,
+                focusOnOpen = !gesture.previewingSearch)
             if (backdrop != null) {
                 backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 backdrop.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
@@ -423,7 +424,7 @@ class HomeActivity : Activity() {
                 drawSearchProgress(if (openingSearch && !reduced) 0f else 1f)
             }
             content.addView(view, FrameLayout.LayoutParams(-1, -1))
-            if (openingSearch && !reduced) animateSearch(1f)
+            if (openingSearch && !reduced && !gesture.previewingSearch) animateSearch(1f)
             return
         }
         previewPage = -1
@@ -872,6 +873,18 @@ class HomeActivity : Activity() {
         render()
     }
 
+    private fun canPreviewSearch(): Boolean =
+        !editing && !reduced && folder == null && folderPresentation == null &&
+            homeLayer != null && store.settingEnabled("search_gesture") &&
+            (grid?.parent as? PageViewport)?.canScrollVertically(-1) == false
+
+    private fun settleSearchPreview(open: Boolean) {
+        if (open) {
+            browser?.focusSearch()
+            animateSearch(1f)
+        } else back()
+    }
+
     private fun stopSearchAnimation() {
         searchAnimator?.removeAllListeners()
         searchAnimator?.cancel()
@@ -1235,7 +1248,8 @@ class HomeActivity : Activity() {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (searchClosing && event.actionMasked == MotionEvent.ACTION_DOWN) finishSearch()
         if (folderPresentation != null && folder == null) return true
-        if (::gesture.isInitialized && !search && !library && pageVisibilityDraft == null && gesture.handle(event)) return true
+        if (::gesture.isInitialized && (!search || gesture.previewingSearch) &&
+            !library && pageVisibilityDraft == null && gesture.handle(event)) return true
         return super.dispatchTouchEvent(event)
     }
 
@@ -1349,6 +1363,8 @@ class HomeActivity : Activity() {
         private var y = 0f
         private var tracking = false
         private var paging = false
+        var previewingSearch = false
+            private set
         private var pageDragOffset = 0f
         private var verticalScroll = false
         private var emptyHold = false
@@ -1360,7 +1376,7 @@ class HomeActivity : Activity() {
         private var origin: Tile? = null
         private var dragged: Tile? = null
         private var shadow: View? = null
-        val active get() = dragged != null || paging
+        val active get() = dragged != null || paging || previewingSearch
         private val hold = Runnable { finishEmptyHold() }
         private val turnPage = Runnable {
             if (dragged != null && edge != 0 && host.folder == null) {
@@ -1419,6 +1435,12 @@ class HomeActivity : Activity() {
                     }
                 }
                 MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> {
+                    if (previewingSearch) {
+                        previewingSearch = false
+                        cancel()
+                        host.settleSearchPreview(false)
+                        return true
+                    }
                     val wasActive = active
                     cancel()
                     return wasActive
@@ -1427,6 +1449,10 @@ class HomeActivity : Activity() {
                     if (!tracking || verticalScroll) return false
                     val dx = x - startX
                     val dy = y - startY
+                    if (previewingSearch) {
+                        host.drawSearchProgress((dy / host.dp(155)).coerceIn(0f, 1f))
+                        return true
+                    }
                     val distance = abs(dx) + abs(dy)
                     if (distance > holdSlop) stopHold()
                     if (distance <= slop && !active) return emptyHold
@@ -1441,6 +1467,12 @@ class HomeActivity : Activity() {
                             pageDragOffset = host.beginPageDrag()
                             host.revealPageIndicator()
                             host.cancelChild(event)
+                        } else if (dy > 0 && abs(dx) < dy * .6f && host.canPreviewSearch()) {
+                            previewingSearch = true
+                            host.cancelChild(event)
+                            host.showBrowser(true)
+                            host.drawSearchProgress((dy / host.dp(155)).coerceIn(0f, 1f))
+                            return true
                         } else {
                             verticalScroll = true
                             if (host.folder == null && dy > host.dp(54) && host.store.settingEnabled("search_gesture")) {
@@ -1460,6 +1492,14 @@ class HomeActivity : Activity() {
                     return dragged != null
                 }
                 MotionEvent.ACTION_UP -> {
+                    if (previewingSearch) {
+                        val dy = y - startY
+                        val open = dy > host.dp(65) && abs(x - startX) < dy * .6f
+                        previewingSearch = false
+                        cancel()
+                        host.settleSearchPreview(open)
+                        return true
+                    }
                     val timeout = holdTimeout
                     // The main thread can receive both events together after a frame stalls.
                     if (timeout != null && event.eventTime - event.downTime >= timeout &&
@@ -1561,6 +1601,8 @@ class HomeActivity : Activity() {
         }
 
         fun cancel() {
+            val cancelSearch = previewingSearch
+            previewingSearch = false
             stopHold()
             host.handler.removeCallbacks(turnPage)
             shadow?.let { (it.parent as? FrameLayout)?.removeView(it) }
@@ -1577,6 +1619,7 @@ class HomeActivity : Activity() {
             pageDragOffset = 0f
             verticalScroll = false
             emptyHold = false
+            if (cancelSearch) host.finishSearch()
         }
     }
 }

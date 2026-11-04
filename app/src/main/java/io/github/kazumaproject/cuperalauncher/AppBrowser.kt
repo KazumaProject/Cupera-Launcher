@@ -41,6 +41,7 @@ class AppBrowser(
     private var query = ""
     private var selectedGroup: String? = null
     private var isSearch = false
+    private var searchInput: EditText? = null
     private var indexed = index(entries)
 
     private fun index(apps: List<Apps.Entry>) = apps.map {
@@ -52,7 +53,7 @@ class AppBrowser(
         drawResults()
     }
 
-    fun view(search: Boolean, useHomeBackdrop: Boolean = false): View {
+    fun view(search: Boolean, useHomeBackdrop: Boolean = false, focusOnOpen: Boolean = true): View {
         isSearch = search
         val root = host.vertical().apply {
             setPadding(host.dp(16), 0, host.dp(16), 0)
@@ -97,19 +98,13 @@ class AppBrowser(
                 override fun afterTextChanged(s: Editable?) = Unit
             })
         }
+        searchInput = input.takeIf { search }
         if (!search) root.addView(input)
         results = host.vertical().apply { setPadding(0, host.dp(10), 0, host.dp(20)) }
         root.addView(ScrollView(host).apply { addView(results) }, LinearLayout.LayoutParams(-1, 0, 1f))
         if (search) root.addView(input, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = host.dp(6) })
         drawResults()
-        if (search) {
-            input.requestFocus()
-            input.postDelayed({
-                if (input.isAttachedToWindow && input.hasFocus()) {
-                    host.getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
-                }
-            }, 120)
-        } else root.requestFocus()
+        if (search && focusOnOpen) focusSearch() else root.requestFocus()
         return android.widget.FrameLayout(host).apply {
             isClickable = useHomeBackdrop
             val systemWallpaper = store.setting("wallpaper", "tide") == "system"
@@ -125,6 +120,16 @@ class AppBrowser(
             }
             addView(root, android.widget.FrameLayout.LayoutParams(-1, -1))
         }
+    }
+
+    fun focusSearch() {
+        val input = searchInput ?: return
+        input.requestFocus()
+        input.postDelayed({
+            if (input.isAttachedToWindow && input.hasFocus()) {
+                host.getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }, 120)
     }
 
     private fun drawResults() {

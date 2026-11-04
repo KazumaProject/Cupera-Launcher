@@ -141,6 +141,39 @@ class LauncherScreenTest {
         }
     }
 
+    @Test fun searchSwipePreviewsBeforeReleaseAndCanReverse() {
+        assumeTrue(android.animation.ValueAnimator.areAnimatorsEnabled())
+        val home = open(HomeActivity::class.java)
+        val automation = instrumentation.uiAutomation
+        try {
+            val size = home.getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
+            val x = size.width() * .5f
+            val y = size.height() * .32f
+            fun preview(): Long {
+                waitFor(home) { views ->
+                    home.hasWindowFocus() && views.any { it is TextView && it.text == "⌕  Search" }
+                }
+                val down = SystemClock.uptimeMillis()
+                touch(down, MotionEvent.ACTION_DOWN, x, y, automation)
+                touch(down, MotionEvent.ACTION_MOVE, x, y + size.height() * .025f, automation)
+                touch(down, MotionEvent.ACTION_MOVE, x, y + size.height() * .15f, automation)
+                waitFor(home) { views -> views.any { it is EditText && it.hint == "Search apps" } }
+                onMain {
+                    assertFalse(descendants(home.window.decorView).filterIsInstance<EditText>().first().hasFocus())
+                }
+                return down
+            }
+            val reversed = preview()
+            touch(reversed, MotionEvent.ACTION_MOVE, x, y, automation)
+            touch(reversed, MotionEvent.ACTION_UP, x, y, automation)
+            waitFor(home) { views -> views.none { it is EditText && it.hint == "Search apps" } }
+
+            val committed = preview()
+            touch(committed, MotionEvent.ACTION_UP, x, y + size.height() * .15f, automation)
+            waitFor(home) { views -> views.any { it is EditText && it.hint == "Search apps" && it.hasFocus() } }
+        } finally { onMain { home.finish() } }
+    }
+
     @Test fun searchCanOpenFromHomeAndFiltersApps() {
         val home = open(HomeActivity::class.java)
         try {
