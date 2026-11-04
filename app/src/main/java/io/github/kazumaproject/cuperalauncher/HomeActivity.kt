@@ -153,7 +153,10 @@ class HomeActivity : Activity() {
         override fun onReceive(context: Context, intent: Intent) {
             if (closed) return
             val removed = intent.action == Intent.ACTION_PROFILE_REMOVED || intent.action == Intent.ACTION_MANAGED_PROFILE_REMOVED
-            invalidatePrivate()
+            val available = intent.action == Intent.ACTION_PROFILE_AVAILABLE
+            if (!available || !privateOpen || apps.privateUser()?.let(apps::privateUnlocked) != true) {
+                invalidatePrivate()
+            }
             if (removed && apps.hasHome()) reconcileProfiles()
             refreshApps()
         }

@@ -195,12 +195,16 @@ class LauncherScreenTest {
                                 .first { it.text == "Show apps" }
                             assertTrue(button.performClick())
                         }
-                        waitFor(home) { views -> views.any { it.contentDescription == title } }
-                        onMain {
-                            assertTrue(home.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0)
+                        fun isShowingPrivate(views: Sequence<View>): Boolean {
+                            val shown = views.any { it.contentDescription == title && it.isShown }
+                            if (shown) {
+                                assertTrue(home.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0)
+                            }
+                            return shown
                         }
+                        waitFor(home, ::isShowingPrivate)
                         drag(travel, MotionEvent.ACTION_UP, blocked = true)
-                        waitForLibrary(true)
+                        waitFor(home) { views -> isShowingPrivate(views) && panelPosition() == 0f }
                         assertTrue(apps.requestPrivate(user, locked = true))
                         waitFor(home) { views -> !apps.privateUnlocked(user) && views.none { it.contentDescription == title } }
                     } finally {
