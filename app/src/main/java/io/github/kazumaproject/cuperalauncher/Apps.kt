@@ -26,9 +26,7 @@ class Apps(private val context: Context) {
     val personal: UserHandle = Process.myUserHandle()
     val personalSerial = users.getSerialNumberForUser(personal)
 
-    data class Entry(val key: AppKey, val info: LauncherActivityInfo, val work: Boolean) {
-        val title get() = info.label.toString()
-    }
+    data class Entry(val key: AppKey, val info: LauncherActivityInfo, val work: Boolean, val title: String)
 
     fun hasHome() = roles.isRoleAvailable(RoleManager.ROLE_HOME) && roles.isRoleHeld(RoleManager.ROLE_HOME)
 
@@ -70,7 +68,7 @@ class Apps(private val context: Context) {
         val serial = users.getSerialNumberForUser(user)
         if (serial < 0) return@runCatching emptyList()
         launcher.getActivityList(null, user).map {
-            Entry(AppKey(it.componentName.flattenToString(), serial), it, user != personal)
+            Entry(AppKey(it.componentName.flattenToString(), serial), it, user != personal, it.label.toString())
         }
     }.getOrDefault(emptyList())
 

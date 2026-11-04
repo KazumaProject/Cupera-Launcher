@@ -32,30 +32,39 @@ class AppBrowser(
     private val onPrivate: (Boolean) -> Unit,
     private val onLaunch: (AppKey, View, UserHandle?) -> Unit
 ) {
-    private val foreground get() = if (dark) Color.WHITE else ink
-    private val secondary get() = if (dark) 0xffa6acbf.toInt() else 0xff535d6c.toInt()
-    private val surface get() = if (dark) 0xff2a2d3c.toInt() else Color.WHITE
+    private val foreground = Color.WHITE
+    private val secondary = 0xffd4e0ef.toInt()
+    private val surface get() = if (dark || isSearch) 0xe5253247.toInt() else 0x66e9f5ff
     private lateinit var results: LinearLayout
     private var privateContent: LinearLayout? = null
     private var generation = 0
     private var query = ""
+    private var selectedGroup: String? = null
     private var isSearch = false
-    private val indexed = entries.map { it to normalized(it.title + " " + it.info.componentName.packageName) }
+    private var indexed = index(entries)
+
+    private fun index(apps: List<Apps.Entry>) = apps.map {
+        it to normalized(it.title + " " + it.info.componentName.packageName)
+    }
+
+    fun updateEntries(entries: List<Apps.Entry>) {
+        indexed = index(entries)
+        drawResults()
+    }
 
     fun view(search: Boolean): View {
         isSearch = search
         val root = host.vertical().apply {
-            setBackgroundColor(if (dark) 0xff151725.toInt() else 0xffedf1fa.toInt())
             setPadding(host.dp(16), 0, host.dp(16), 0)
             isFocusableInTouchMode = true
         }
         val toolbar = host.horizontal().apply { gravity = Gravity.CENTER_VERTICAL }
-        val back = host.label("‹ Home", 15f, accent, true).apply {
+        val back = host.label("‹ Home", 15f, foreground, true).apply {
             minHeight = host.dp(52)
             setOnClickListener { onBack() }
         }
         toolbar.addView(back, LinearLayout.LayoutParams(0, -2, 1f))
-        val settings = host.label(if (search) "Library" else "Settings", 15f, accent, true).apply {
+        val settings = host.label(if (search) "Library" else "Settings", 15f, foreground, true).apply {
             minHeight = host.dp(52)
             setOnClickListener {
                 if (search) onLibrary() else host.startActivity(Intent(host, SettingsActivity::class.java))
@@ -63,12 +72,11 @@ class AppBrowser(
         }
         toolbar.addView(settings)
         root.addView(toolbar)
-        root.addView(host.label(if (search) "Search" else "App Library", 33f, foreground, true).apply {
-            isAccessibilityHeading = true
-            setPadding(host.dp(2), 0, 0, host.dp(12))
-        })
+        root.accessibilityPaneTitle = if (search) "Search" else "App Library"
         val input = EditText(host).apply {
-            hint = "Search apps"
+            hint = if (search) "Search apps" else "App Library"
+            contentDescription = "Search apps"
+            gravity = if (search) Gravity.CENTER_VERTICAL else Gravity.CENTER
             setTextColor(this@AppBrowser.foreground)
             setHintTextColor(secondary)
             setSingleLine()
@@ -80,15 +88,19 @@ class AppBrowser(
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                     query = normalized(s.toString())
-                    if (query.isNotEmpty()) clearPrivate()
+                    if (query.isNotEmpty()) {
+                        selectedGroup = null
+                        clearPrivate()
+                    }
                     drawResults()
                 }
                 override fun afterTextChanged(s: Editable?) = Unit
             })
         }
-        root.addView(input)
+        if (!search) root.addView(input)
         results = host.vertical().apply { setPadding(0, host.dp(10), 0, host.dp(20)) }
         root.addView(ScrollView(host).apply { addView(results) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        if (search) root.addView(input, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = host.dp(6) })
         drawResults()
         if (search) {
             input.requestFocus()
@@ -98,7 +110,15 @@ class AppBrowser(
                 }
             }, 120)
         } else root.requestFocus()
-        return root
+        return android.widget.FrameLayout(host).apply {
+            addView(View(host).apply {
+                background = CuperaWallpaper(dark || store.setting("wallpaper") == "dusk")
+                val radius = host.dp(19).toFloat()
+                setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.CLAMP))
+            }, android.widget.FrameLayout.LayoutParams(-1, -1))
+            if (search) addView(View(host).apply { setBackgroundColor(0x6a101725) }, android.widget.FrameLayout.LayoutParams(-1, -1))
+            addView(root, android.widget.FrameLayout.LayoutParams(-1, -1))
+        }
     }
 
     private fun drawResults() {
@@ -106,18 +126,66 @@ class AppBrowser(
         privateContent = null
         val filtered = indexed.filter { (_, key) -> query.isEmpty() || query.split(' ').all(key::contains) }.map { it.first }
         val grouped = !isSearch && query.isEmpty() && store.settingEnabled("library_groups")
-        if (grouped) filtered.groupBy(::category).toSortedMap().forEach { (title, items) ->
-            results.addView(heading(title))
-            val card = card()
-            items.forEach { card.addView(appRow(it)) }
-            results.addView(card)
+        if (grouped) {
+            val groups = filtered.groupBy(::category).toSortedMap()
+            val selected = selectedGroup
+            if (selected != null && selected in groups) {
+                results.addView(command("‹  All categories") { selectedGroup = null; drawResults() })
+                results.addView(heading(selected))
+                val card = card()
+                groups.getValue(selected).forEach { card.addView(appRow(it)) }
+                results.addView(card)
+            } else {
+                groups.entries.chunked(2).forEach { pair ->
+                    val row = host.horizontal()
+                    pair.forEach { (name, apps) ->
+                        row.addView(categoryCard(name, apps), LinearLayout.LayoutParams(0, -2, 1f).apply {
+                            setMargins(host.dp(4), 0, host.dp(4), host.dp(12))
+                        })
+                    }
+                    if (pair.size == 1) row.addView(View(host), LinearLayout.LayoutParams(0, 1, 1f))
+                    results.addView(row)
+                }
+            }
         } else {
             val card = card()
             filtered.forEach { card.addView(appRow(it)) }
             if (filtered.isEmpty()) card.addView(host.label("No apps found", 16f, secondary).apply { minHeight = host.dp(48) })
             results.addView(card)
         }
-        if (!isSearch && query.isEmpty() && store.settingEnabled("private_container")) apps.privateUser()?.let(::drawPrivate)
+        if (!isSearch && query.isEmpty() && selectedGroup == null && store.settingEnabled("private_container")) {
+            apps.privateUser()?.let(::drawPrivate)
+        }
+    }
+
+    private fun categoryCard(name: String, apps: List<Apps.Entry>): View = card().apply {
+        setPadding(host.dp(8), host.dp(8), host.dp(8), host.dp(8))
+        for (rowNumber in 0..1) {
+            val row = host.horizontal()
+            for (column in 0..1) {
+                val entry = apps.getOrNull(rowNumber * 2 + column)
+                val cell = android.widget.FrameLayout(host)
+                if (entry != null) {
+                    val size = host.dp(46)
+                    val image = ImageView(host).apply {
+                        background = rounded(if (dark) 0xff393e50.toInt() else 0xffe4e9f4.toInt(), size * .24f)
+                        clipToOutline = true
+                        host.icons.show(this, entry, !entry.work)
+                        contentDescription = entry.title
+                        setOnClickListener { onLaunch(entry.key, this, null) }
+                    }
+                    cell.addView(image, android.widget.FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+                }
+                row.addView(cell, LinearLayout.LayoutParams(0, host.dp(54), 1f))
+            }
+            addView(row)
+        }
+        addView(command(name) { selectedGroup = name; drawResults() }.apply {
+            gravity = Gravity.CENTER
+            minHeight = host.dp(42)
+            setPadding(0, 0, 0, 0)
+            textSize = 13f
+        })
     }
 
     private fun drawPrivate(user: UserHandle) {
@@ -179,7 +247,7 @@ class AppBrowser(
         isAccessibilityHeading = true
     }
 
-    private fun command(text: String, action: () -> Unit) = host.label(text, 16f, accent, true).apply {
+    private fun command(text: String, action: () -> Unit) = host.label(text, 16f, foreground, true).apply {
         minHeight = host.dp(50)
         setPadding(host.dp(14), 0, host.dp(10), 0)
         setOnClickListener { action() }
@@ -192,7 +260,8 @@ class AppBrowser(
             setPadding(host.dp(12), host.dp(6), host.dp(12), host.dp(6))
         }
         val icon = ImageView(host).apply {
-            setImageDrawable(runCatching { entry.info.getBadgedIcon(resources.displayMetrics.densityDpi) }.getOrNull())
+            if (user == null) host.icons.show(this, entry)
+            else setImageDrawable(runCatching { entry.info.getBadgedIcon(resources.displayMetrics.densityDpi) }.getOrNull())
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         row.addView(icon, LinearLayout.LayoutParams(host.dp(38), host.dp(38)).apply { marginEnd = host.dp(12) })

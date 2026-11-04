@@ -11,9 +11,6 @@ import android.content.IntentFilter
 import android.content.pm.LauncherApps
 import android.graphics.Color
 import android.graphics.Rect
-import android.graphics.drawable.AdaptiveIconDrawable
-import android.graphics.drawable.InsetDrawable
-import android.graphics.drawable.LayerDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -51,6 +48,10 @@ class HomeActivity : Activity() {
     private var folderGrid: TileGrid? = null
     private var browser: AppBrowser? = null
     private var entries = emptyList<Apps.Entry>()
+    internal val icons = AppIcons()
+    private val appWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var appGeneration = 0
+    private val newPackages = linkedSetOf<String>()
     private var layout = Layout(0, emptyList())
     private var page = 0
     private var editing = false
@@ -106,6 +107,7 @@ class HomeActivity : Activity() {
         store = Workspace(this)
         apps = Apps(this)
         widgets = Widgets(this, store, ::reload)
+        if (android.os.Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(false)
         widgets.restore(state)
         page = state?.getInt("page") ?: 0
         root = FrameLayout(this)
@@ -137,7 +139,9 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        val before = darkMode
         darkMode = dark(store)
+        if (before != darkMode && browser != null) render()
         systemBars(root, darkMode && (search || library) || !search && !library)
         layout = store.read()
         refreshApps()
@@ -154,6 +158,9 @@ class HomeActivity : Activity() {
     override fun onStop() { widgets.stop(); super.onStop() }
 
     override fun onDestroy() {
+        appGeneration++
+        appWorker.shutdownNow()
+        icons.close()
         handler.removeCallbacksAndMessages(null)
         runCatching { apps.launcher.unregisterCallback(packages) }
         unregisterReceiver(profiles)
@@ -195,7 +202,19 @@ class HomeActivity : Activity() {
     }
 
     private fun refreshApps(newPackage: String? = null) {
-        entries = apps.entries()
+        if (newPackage != null) newPackages.add(newPackage)
+        val token = ++appGeneration
+        appWorker.execute {
+            val snapshot = apps.entries()
+            handler.post {
+                if (token == appGeneration && !isDestroyed) publishApps(snapshot)
+            }
+        }
+    }
+
+    private fun publishApps(snapshot: List<Apps.Entry>) {
+        if (entries != snapshot) icons.invalidate()
+        entries = snapshot
         if (!store.settingEnabled("seeded", false) && entries.isNotEmpty()) {
             val personal = entries.filter { it.key.profile == apps.personalSerial }
             val dockEntries = listOf("dialer", "messaging", "chrome", "camera").mapNotNull { term ->
@@ -206,13 +225,15 @@ class HomeActivity : Activity() {
             if (store.save(layout.revision, seeds)) store.put("seeded", "true")
             layout = store.read()
         }
-        if (newPackage != null) {
-            entries.filter { packageOf(it.key) == newPackage && it.key.profile == apps.personalSerial }.forEach {
-                if (layout.tiles.none { tile -> tile.key == it.key }) addApp(it.key)
-            }
+        val installed = newPackages.toSet()
+        newPackages.clear()
+        entries.filter { packageOf(it.key) in installed && it.key.profile == apps.personalSerial }.forEach {
+            if (layout.tiles.none { tile -> tile.key == it.key }) addApp(it.key)
         }
         if (gesture.active) gesture.cancel()
-        render()
+        val current = browser
+        if ((search || library) && current != null) current.updateEntries(entries)
+        else render()
     }
 
     private fun invalidatePrivate() {
@@ -257,7 +278,7 @@ class HomeActivity : Activity() {
         val isPanel = library || search
         val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
             WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-        window.insetsController?.setSystemBarsAppearance(if (isPanel && !darkMode) lightBars else 0, lightBars)
+        window.insetsController?.setSystemBarsAppearance(0, lightBars)
         if (isPanel) {
             val panel = AppBrowser(this, apps, entries, darkMode, store, privateOpen,
                 onBack = ::back, onLibrary = { showBrowser(false) }, onAdd = ::addApp, onPrivate = { privateOpen = it },
@@ -275,14 +296,15 @@ class HomeActivity : Activity() {
         val horizontalMargin = dp(18)
         val dockHeight = if (store.settingEnabled("dock")) min(dp(114), totalHeight / 4) else 0
         val footerHeight = dp(44)
-        val gridHeight = maxOf(dp(64) * 6, totalHeight - dockHeight - footerHeight - dp(56))
+        val gridTop = dp(if (editing) 46 else 26)
+        val gridHeight = maxOf(dp(64) * 6, totalHeight - dockHeight - footerHeight - gridTop - dp(30))
         val gridWidth = maxOf(dp(220), totalWidth - horizontalMargin * 2)
         val gridView = TileGrid(this, page, "", gridWidth, gridHeight, 4, 6, ::tileView)
         gridView.populate(layout.tiles)
         grid = gridView
-        workspace.addView(wrapGrid(gridView), FrameLayout.LayoutParams(gridWidth, maxOf(dp(72), totalHeight - dockHeight - footerHeight - dp(16))).apply {
+        workspace.addView(wrapGrid(gridView), FrameLayout.LayoutParams(gridWidth, maxOf(dp(72), totalHeight - dockHeight - footerHeight - gridTop)).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            topMargin = dp(26)
+            topMargin = gridTop
         })
         dock = FrameLayout(this)
         dockGrid = null
@@ -298,6 +320,10 @@ class HomeActivity : Activity() {
             })
         }
         footer(dockHeight)
+        if (editing) {
+            content.addView(pill("Add Widget") { widgets.choose(page) }, FrameLayout.LayoutParams(-2, dp(42), Gravity.TOP or Gravity.START).apply { marginStart = dp(18) })
+            content.addView(pill("Done") { editing = false; reload() }, FrameLayout.LayoutParams(-2, dp(42), Gravity.TOP or Gravity.END).apply { marginEnd = dp(18) })
+        }
         folder?.let(::drawFolder)
         gesture.draw()
     }
@@ -338,8 +364,7 @@ class HomeActivity : Activity() {
     private fun footer(dockHeight: Int) {
         val bar = horizontal().apply { gravity = Gravity.CENTER }
         if (editing) {
-            bar.addView(pill("Add Widget") { widgets.choose(page) })
-            bar.addView(pill("Done") { editing = false; reload() })
+            bar.addView(label("${page + 1}  /  ${maxOf(layout.pages, page + 1)}", 14f, Color.WHITE).apply { gravity = Gravity.CENTER })
         } else {
             if (store.settingEnabled("page_dots") && layout.pages > 1) {
                 bar.addView(pill((0 until min(layout.pages, 8)).joinToString(" ") { if (it == page) "●" else "·" }) {
@@ -400,6 +425,14 @@ class HomeActivity : Activity() {
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }, FrameLayout.LayoutParams(dp(22), dp(19), Gravity.TOP or Gravity.END))
         }
+        if (editing && tile.kind != TileKind.FOLDER) {
+            iconOverlay.addView(label("−", 15f, ink, true).apply {
+                gravity = Gravity.CENTER
+                background = rounded(0xffe1eaf5.toInt(), dp(13).toFloat())
+                contentDescription = "Remove $name from Home"
+                setOnClickListener { removeTile(tile) }
+            }, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP or Gravity.START))
+        }
         frame.addView(iconOverlay, LinearLayout.LayoutParams(size, size))
         if (showLabel) frame.addView(label(name, 12f, Color.WHITE).apply {
             gravity = Gravity.CENTER
@@ -434,18 +467,13 @@ class HomeActivity : Activity() {
         val shortcut = entry?.takeIf { tile.kind == TileKind.SHORTCUT }?.let { app ->
             apps.shortcuts(app).firstOrNull { it.id == tile.key?.shortcut }
         }
-        val drawable = runCatching {
-            when {
-                shortcut != null -> apps.launcher.getShortcutBadgedIconDrawable(shortcut, resources.displayMetrics.densityDpi)
-                entry != null -> entry.info.getBadgedIcon(resources.displayMetrics.densityDpi)
-                else -> null
-            }
-        }.getOrNull()
-        val rendered = if (drawable is AdaptiveIconDrawable && tile.key?.profile == apps.personalSerial) {
-            LayerDrawable(listOfNotNull(drawable.background, drawable.foreground)
-                .map { InsetDrawable(it, -.25f) }.toTypedArray())
-        } else drawable
-        setImageDrawable(rendered ?: getDrawable(R.drawable.ic_cupera))
+        setImageDrawable(getDrawable(R.drawable.ic_cupera))
+        if (shortcut != null) {
+            val drawable = runCatching {
+                apps.launcher.getShortcutBadgedIconDrawable(shortcut, resources.displayMetrics.densityDpi)
+            }.getOrNull()
+            if (drawable != null) setImageDrawable(drawable)
+        } else if (entry != null) icons.show(this, entry, entry.key.profile == apps.personalSerial)
         scaleType = ImageView.ScaleType.FIT_CENTER
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
@@ -482,7 +510,7 @@ class HomeActivity : Activity() {
     private fun back() {
         when {
             search || library -> { closeKeyboard(); invalidatePrivate(); search = false; library = false }
-            folder != null -> folder = null
+            folder != null -> { closeFolder(); return }
             editing -> editing = false
             page != 0 -> page = 0
             else -> return
@@ -496,7 +524,7 @@ class HomeActivity : Activity() {
         val tile = layout.tiles.firstOrNull { it.id == id } ?: return
         val overlay = FrameLayout(this).apply {
             setBackgroundColor(0x88091a34.toInt())
-            setOnClickListener { folder = null; render() }
+            setOnClickListener { closeFolder() }
         }
         val card = vertical().apply {
             setPadding(dp(12), dp(7), dp(12), dp(12))
@@ -520,6 +548,24 @@ class HomeActivity : Activity() {
             LinearLayout.LayoutParams(-1, min(height, content.height / 2)))
         overlay.addView(card, FrameLayout.LayoutParams(width, -2, Gravity.CENTER))
         content.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun closeFolder() {
+        val id = folder ?: return
+        val overlay = content.getChildAt(content.childCount - 1) as? FrameLayout
+        val card = overlay?.getChildAt(0)
+        if (card == null || reduced) {
+            folder = null
+            render()
+            return
+        }
+        card.animate().cancel()
+        card.animate().scaleX(.74f).scaleY(.74f).alpha(.3f).setDuration(160).withEndAction {
+            if (overlay.parent === content && folder == id) {
+                folder = null
+                render()
+            }
+        }.start()
     }
 
     private fun revealFolder() {
@@ -662,12 +708,31 @@ class HomeActivity : Activity() {
     ) : FrameLayout(context) {
         private val widthPerCell = gridWidth / columns
         private val heightPerCell = gridHeight / rows
+        private val tileViews = mutableMapOf<String, Pair<Tile, View>>()
+
+        fun preview(tiles: List<Tile>, dragging: String?, reduced: Boolean) {
+            val destinations = tiles.associateBy { it.id }
+            tileViews.values.forEach { (original, view) ->
+                val target = destinations[original.id]?.slot
+                val offset = target?.takeIf { it.page == page && it.folder == folder }
+                val dx = if (offset == null) 0f else ((offset.cell % columns - original.slot.cell % columns) * widthPerCell).toFloat()
+                val dy = if (offset == null) 0f else ((offset.cell / columns - original.slot.cell / columns) * heightPerCell).toFloat()
+                val alpha = if (original.id == dragging) .25f else 1f
+                view.animate().cancel()
+                if (reduced) {
+                    view.translationX = dx
+                    view.translationY = dy
+                    view.alpha = alpha
+                } else view.animate().translationX(dx).translationY(dy).alpha(alpha).setDuration(145).start()
+            }
+        }
 
         fun populate(tiles: List<Tile>) {
             tiles.filter { it.slot.page == page && it.slot.folder == folder }.forEach {
                 val gap = if (it.isWidget) context.dp(4) else 0
-                addView(viewFactory(it, widthPerCell, heightPerCell),
-                    LayoutParams(widthPerCell * it.width - 2 * gap, heightPerCell * it.height - 2 * gap).apply {
+                val child = viewFactory(it, widthPerCell, heightPerCell)
+                tileViews[it.id] = it to child
+                addView(child, LayoutParams(widthPerCell * it.width - 2 * gap, heightPerCell * it.height - 2 * gap).apply {
                         leftMargin = it.slot.cell % columns * widthPerCell + gap
                         topMargin = it.slot.cell / columns * heightPerCell + gap
                     })
@@ -820,6 +885,7 @@ class HomeActivity : Activity() {
             if (destination != candidate) {
                 candidate = destination
                 hoverTime = android.os.SystemClock.uptimeMillis()
+                preview()
             }
             val location = IntArray(2).also(host.content::getLocationOnScreen)
             val localX = x - location[0]
@@ -841,8 +907,17 @@ class HomeActivity : Activity() {
             position()
         }
 
+        private fun preview() {
+            val tile = dragged
+            val provisional = candidate?.let { slot -> tile?.let { host.layout.move(it.id, slot) } }
+            listOfNotNull(host.grid, host.dockGrid, host.folderGrid).forEach {
+                it.preview(provisional ?: host.layout.tiles, tile?.id, host.reduced)
+            }
+        }
+
         fun draw() {
             val tile = dragged ?: return
+            preview()
             shadow?.let { (it.parent as? FrameLayout)?.removeView(it) }
             val view = if (tile.isApp) host.appIcon(tile) else host.label(host.title(tile), 15f, Color.WHITE, true).apply {
                 gravity = Gravity.CENTER
@@ -868,9 +943,11 @@ class HomeActivity : Activity() {
             shadow?.let { (it.parent as? FrameLayout)?.removeView(it) }
             if (paging && host::workspace.isInitialized) host.settlePage()
             shadow = null
+            val wasDragging = dragged != null
             dragged = null
             origin = null
             candidate = null
+            if (wasDragging) preview()
             edge = 0
             tracking = false
             paging = false

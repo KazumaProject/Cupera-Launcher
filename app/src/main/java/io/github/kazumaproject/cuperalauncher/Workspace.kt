@@ -6,7 +6,8 @@ import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
 
-class Workspace(context: Context) : SQLiteOpenHelper(context.applicationContext, "workspace.db", null, 1) {
+class Workspace(context: Context, databaseName: String = "workspace.db") :
+    SQLiteOpenHelper(context.applicationContext, databaseName, null, 1) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE layout (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, data TEXT NOT NULL)")
         db.execSQL("INSERT INTO layout VALUES (1, 0, '[]')")

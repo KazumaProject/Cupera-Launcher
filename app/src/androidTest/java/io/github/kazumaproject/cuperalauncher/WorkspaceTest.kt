@@ -8,17 +8,18 @@ import org.junit.Before
 import org.junit.Test
 
 class WorkspaceTest {
-    private val context get() = InstrumentationRegistry.getInstrumentation().context
+    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private lateinit var store: Workspace
+    private val databaseName = "workspace-instrumentation.db"
 
     @Before fun open() {
-        context.deleteDatabase("workspace.db")
-        store = Workspace(context)
+        context.deleteDatabase(databaseName)
+        store = Workspace(context, databaseName)
     }
 
     @After fun close() {
         store.close()
-        context.deleteDatabase("workspace.db")
+        context.deleteDatabase(databaseName)
     }
 
     @Test fun commitSurvivesReopenAndRejectsStaleEdit() {
@@ -26,7 +27,7 @@ class WorkspaceTest {
         val tiles = listOf(app("personal", 0, 0))
         assertTrue(store.save(initial.revision, tiles))
         store.close()
-        store = Workspace(context)
+        store = Workspace(context, databaseName)
         assertFalse(store.save(initial.revision, emptyList()))
         assertEquals(tiles, store.read().tiles)
     }
