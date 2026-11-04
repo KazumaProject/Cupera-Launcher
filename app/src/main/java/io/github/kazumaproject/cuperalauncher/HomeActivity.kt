@@ -1268,6 +1268,7 @@ class HomeActivity : Activity() {
         private var pageDragOffset = 0f
         private var verticalScroll = false
         private var emptyHold = false
+        private var holdTimeout: Int? = null
         private var revision = 0L
         private var candidate: Drop? = null
         private var hoverTime = 0L
@@ -1276,18 +1277,25 @@ class HomeActivity : Activity() {
         private var dragged: Tile? = null
         private var shadow: View? = null
         val active get() = dragged != null || paging
-        private val hold = Runnable {
-            if (tracking && !paging && dragged == null && origin == null && host.folder == null && !host.editing) {
-                emptyHold = true
-                host.editing = true
-                host.render()
-            }
-        }
+        private val hold = Runnable { finishEmptyHold() }
         private val turnPage = Runnable {
             if (dragged != null && edge != 0 && host.folder == null) {
                 host.switchPage(host.page + edge)
                 candidate = null
             }
+        }
+
+        private fun stopHold() {
+            host.handler.removeCallbacks(hold)
+            holdTimeout = null
+        }
+
+        private fun finishEmptyHold() {
+            stopHold()
+            if (!tracking || paging || dragged != null || origin != null || host.folder != null || host.editing) return
+            emptyHold = true
+            host.editing = true
+            host.render()
         }
 
         private fun slot(x: Float, y: Float): Slot? {
@@ -1320,7 +1328,11 @@ class HomeActivity : Activity() {
                     tracking = true
                     origin = s?.let(host.layout::at)
                     revision = host.layout.revision
-                    if (origin == null) host.handler.postDelayed(hold, ViewConfiguration.getLongPressTimeout().toLong())
+                    if (origin == null) {
+                        val timeout = ViewConfiguration.getLongPressTimeout()
+                        holdTimeout = timeout
+                        host.handler.postDelayed(hold, timeout.toLong())
+                    }
                 }
                 MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> {
                     val wasActive = active
@@ -1332,7 +1344,7 @@ class HomeActivity : Activity() {
                     val dx = x - startX
                     val dy = y - startY
                     val distance = abs(dx) + abs(dy)
-                    if (distance > holdSlop) host.handler.removeCallbacks(hold)
+                    if (distance > holdSlop) stopHold()
                     if (distance <= slop && !active) return emptyHold
                     if (!active) {
                         val tile = origin
@@ -1364,7 +1376,12 @@ class HomeActivity : Activity() {
                     return dragged != null
                 }
                 MotionEvent.ACTION_UP -> {
-                    host.handler.removeCallbacks(hold)
+                    val timeout = holdTimeout
+                    // The main thread can receive both events together after a frame stalls.
+                    if (timeout != null && event.eventTime - event.downTime >= timeout &&
+                        abs(x - startX) + abs(y - startY) <= holdSlop
+                    ) finishEmptyHold()
+                    else stopHold()
                     if (paging) {
                         val dx = pageDragOffset + x - startX
                         paging = false
@@ -1460,7 +1477,7 @@ class HomeActivity : Activity() {
         }
 
         fun cancel() {
-            host.handler.removeCallbacks(hold)
+            stopHold()
             host.handler.removeCallbacks(turnPage)
             shadow?.let { (it.parent as? FrameLayout)?.removeView(it) }
             if (paging && host::workspace.isInitialized) host.settlePage()

@@ -15,6 +15,8 @@ import android.widget.ImageView
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.test.platform.app.InstrumentationRegistry
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -68,6 +70,33 @@ class LauncherScreenTest {
                 val location = IntArray(2).also(viewport::getLocationOnScreen)
                 assertEquals(originalGridTop, location[1])
             }
+        } finally { onMain { home.finish() } }
+    }
+
+    @Test fun longPressUsesEventDurationWhenDeliveryIsDelayed() {
+        val home = open(HomeActivity::class.java)
+        try {
+            val (x, y) = whitespaceBelowGrid(home)
+            val automation = instrumentation.uiAutomation
+            val timeout = ViewConfiguration.getLongPressTimeout().toLong()
+            val blocked = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            onMain {
+                home.window.decorView.post {
+                    blocked.countDown()
+                    release.await(timeout + 3_000, TimeUnit.MILLISECONDS)
+                }
+            }
+            try {
+                assertTrue(blocked.await(2, TimeUnit.SECONDS))
+                val down = SystemClock.uptimeMillis()
+                touch(down, MotionEvent.ACTION_DOWN, x, y, automation, sync = false)
+                SystemClock.sleep(timeout + 75)
+                touch(down, MotionEvent.ACTION_UP, x, y, automation, sync = false)
+            } finally {
+                release.countDown()
+            }
+            waitFor(home) { views -> views.any { it is TextView && it.text == "Edit" && it.height > 0 } }
         } finally { onMain { home.finish() } }
     }
 
