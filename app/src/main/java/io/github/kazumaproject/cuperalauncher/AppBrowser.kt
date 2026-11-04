@@ -190,7 +190,6 @@ class AppBrowser(
 
     private fun drawPrivate(user: UserHandle) {
         val panel = card()
-        privateContent = panel
         val unlocked = apps.privateUnlocked(user)
         panel.addView(heading("Private Space"))
         if (unlocked) {
@@ -205,13 +204,16 @@ class AppBrowser(
                 requestState(user, true)
             })
             if (showingPrivate) {
+                val items = host.vertical()
+                privateContent = items
+                panel.addView(items)
                 val token = ++generation
                 host.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                 panel.post {
                     if (token != generation || !panel.isAttachedToWindow || !apps.privateUnlocked(user)) return@post
                     val privateApps = apps.privateEntries(user)
                     if (token != generation || !apps.privateUnlocked(user)) return@post
-                    privateApps.forEach { panel.addView(appRow(it, user)) }
+                    privateApps.forEach { items.addView(appRow(it, user)) }
                     if (!apps.privateUnlocked(user)) clearPrivate()
                 }
             }

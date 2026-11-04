@@ -4,6 +4,9 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.app.NotificationManager
 import android.app.role.RoleManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Color
@@ -22,6 +25,11 @@ class SettingsActivity : Activity() {
     private lateinit var content: LinearLayout
     private var section: String? = null
     private var dark = false
+    private val profileEvents = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (section == "Private Space") render()
+        }
+    }
     private val textColor get() = if (dark) Color.WHITE else ink
     private val secondary get() = if (dark) 0xffadb2c4.toInt() else 0xff586276.toInt()
     private val surface get() = if (dark) 0xff252632.toInt() else Color.WHITE
@@ -31,12 +39,20 @@ class SettingsActivity : Activity() {
         store = Workspace(this)
         apps = Apps(this)
         section = state?.getString("section")
+        registerReceiver(profileEvents, IntentFilter().apply {
+            addAction(Intent.ACTION_PROFILE_AVAILABLE)
+            addAction(Intent.ACTION_PROFILE_UNAVAILABLE)
+        }, RECEIVER_EXPORTED)
         if (android.os.Build.VERSION.SDK_INT >= 33) onBackInvokedDispatcher.registerOnBackInvokedCallback(0, ::back)
     }
 
     override fun onResume() { super.onResume(); render() }
     override fun onSaveInstanceState(out: Bundle) { out.putString("section", section); super.onSaveInstanceState(out) }
-    override fun onDestroy() { store.close(); super.onDestroy() }
+    override fun onDestroy() {
+        unregisterReceiver(profileEvents)
+        store.close()
+        super.onDestroy()
+    }
 
     @Deprecated("Back on Android 12")
     override fun onBackPressed() = back()
@@ -130,6 +146,13 @@ class SettingsActivity : Activity() {
                         else -> "Android manages your space and authentication."
                     }
                     row("Android Private Space settings", detail) { runCatching { apps.privateSettings(this@SettingsActivity) }.onFailure { unavailable() } }
+                    apps.privateUser()?.let { user ->
+                        val unlocked = apps.privateUnlocked(user)
+                        row(if (unlocked) "Lock Private Space" else "Unlock Private Space", "Android control") {
+                            if (!apps.requestPrivate(user, unlocked)) unavailable()
+                            content.post { if (!isFinishing) render() }
+                        }
+                    }
                 }
             }
             "Accessibility" -> group {
@@ -157,6 +180,12 @@ class SettingsActivity : Activity() {
             }
             "About Cupera" -> group {
                 row("Cupera Launcher", "Version ${packageManager.getPackageInfo(packageName, 0).versionName}")
+                row("Third-party licenses", "Kotlin standard library") {
+                    val notice = assets.open("licenses/kotlin-NOTICE.txt").bufferedReader().use { it.readText() }
+                    val license = assets.open("licenses/kotlin-LICENSE.txt").bufferedReader().use { it.readText() }
+                    AlertDialog.Builder(this@SettingsActivity).setTitle("Third-party licenses")
+                        .setMessage(notice + "\n\n" + license).setPositiveButton("Close", null).show()
+                }
                 row("App information", "Android setting") {
                     external(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
                 }
