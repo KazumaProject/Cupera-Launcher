@@ -151,11 +151,22 @@ class LauncherScreenTest {
             }
             waitFor(home) { views -> views.any { it is EditText && it.hint == "Search apps" } }
             onMain { descendants(home.window.decorView).filterIsInstance<EditText>().first().setText("cupera") }
-            waitFor(home) { views -> views.any { it is TextView && it.text == "Cupera Launcher" } }
+            waitFor(home) {
+                accessibleDescendants(home.window.decorView).any { it is TextView && it.text == "Cupera Launcher" }
+            }
             onMain {
-                val names = descendants(home.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+                val names = accessibleDescendants(home.window.decorView).filterIsInstance<TextView>()
+                    .map { it.text.toString() }.toList()
                 assertFalse(names.contains("No apps found"))
                 assertFalse(names.contains("Chrome"))
+                assertFalse(names.contains("⌕  Search"))
+                val back = accessibleDescendants(home.window.decorView).filterIsInstance<TextView>()
+                    .first { it.text == "‹ Home" }
+                assertTrue(back.performClick())
+            }
+            waitFor(home) { views ->
+                views.none { it is EditText && it.hint == "Search apps" } &&
+                    accessibleDescendants(home.window.decorView).any { it is TextView && it.text == "⌕  Search" }
             }
         } finally { onMain { home.finish() } }
     }
@@ -382,5 +393,12 @@ class LauncherScreenTest {
     private fun descendants(view: View): Sequence<View> = sequence {
         yield(view)
         if (view is ViewGroup) for (i in 0 until view.childCount) yieldAll(descendants(view.getChildAt(i)))
+    }
+
+    private fun accessibleDescendants(view: View): Sequence<View> = sequence {
+        if (view.importantForAccessibility != View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS) {
+            yield(view)
+            if (view is ViewGroup) for (i in 0 until view.childCount) yieldAll(accessibleDescendants(view.getChildAt(i)))
+        }
     }
 }

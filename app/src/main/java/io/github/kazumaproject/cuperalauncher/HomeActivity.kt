@@ -26,6 +26,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.WindowInsetsController
 import android.view.WindowInsets
@@ -85,6 +86,16 @@ class HomeActivity : Activity() {
     private var dockGrid: TileGrid? = null
     private var folderGrid: TileGrid? = null
     private var browser: AppBrowser? = null
+    private var searchPanel: View? = null
+    private var searchAnimator: ValueAnimator? = null
+    private var searchProgress = 0f
+    private var searchClosing = false
+    private val searchBlurEffects by lazy {
+        List(9) { step ->
+            val radius = dp(24) * step / 8f
+            if (step == 0) null else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+        }
+    }
     private var entries = emptyList<Apps.Entry>()
     internal val icons = AppIcons()
     private val appWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -215,6 +226,7 @@ class HomeActivity : Activity() {
 
     override fun onDestroy() {
         closed = true
+        stopSearchAnimation()
         appGeneration++
         appWorker.shutdownNow()
         icons.close()
@@ -349,6 +361,12 @@ class HomeActivity : Activity() {
 
     private fun render() {
         if (closed || !::gesture.isInitialized || content.width == 0 || isFinishing) return
+        if (searchClosing) search = false
+        val backdrop = homeLayer?.takeIf { search && folderPresentation == null && editToolbar == null }
+        val openingSearch = backdrop != null && searchPanel == null
+        stopSearchAnimation()
+        searchPanel = null
+        searchClosing = false
         renderedHome = if (search || library) null else homeDisplay()
         if (::workspace.isInitialized) workspace.animate().cancel()
         folderPresentation?.let {
@@ -357,9 +375,12 @@ class HomeActivity : Activity() {
             it.backdropAnimator?.cancel()
         }
         folderPresentation = null
-        homeLayer = null
+        homeLayer = backdrop
         openedFolderTile = null
-        content.removeAllViews()
+        if (backdrop == null) content.removeAllViews()
+        else for (index in content.childCount - 1 downTo 0) {
+            if (content.getChildAt(index) !== backdrop) content.removeViewAt(index)
+        }
         editToolbar?.let(root::removeView)
         editToolbar = null
         browser = null
@@ -388,7 +409,21 @@ class HomeActivity : Activity() {
                 onBack = ::back, onLibrary = { showBrowser(false) }, onAdd = ::addApp, onPrivate = { privateOpen = it },
                 onLaunch = { key, anchor, user -> launch(key, anchor, user) })
             browser = panel
-            content.addView(panel.view(search), FrameLayout.LayoutParams(-1, -1))
+            val view = panel.view(search, useHomeBackdrop = backdrop != null)
+            if (backdrop != null) {
+                backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                backdrop.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                backdrop.background = if (systemWallpaper) null
+                    else CuperaWallpaper(store.setting("wallpaper") == "dusk" || darkMode)
+                workspace.translationX = 0f
+                previewView?.let(workspace::removeView)
+                previewView = null
+                previewPage = -1
+                searchPanel = view
+                drawSearchProgress(if (openingSearch && !reduced) 0f else 1f)
+            }
+            content.addView(view, FrameLayout.LayoutParams(-1, -1))
+            if (openingSearch && !reduced) animateSearch(1f)
             return
         }
         previewPage = -1
@@ -837,11 +872,59 @@ class HomeActivity : Activity() {
         render()
     }
 
+    private fun stopSearchAnimation() {
+        searchAnimator?.removeAllListeners()
+        searchAnimator?.cancel()
+        searchAnimator = null
+    }
+
+    private fun drawSearchProgress(progress: Float) {
+        searchProgress = progress
+        searchPanel?.alpha = progress
+        homeLayer?.setRenderEffect(searchBlurEffects[(progress * 8).roundToInt()])
+    }
+
+    private fun animateSearch(target: Float) {
+        stopSearchAnimation()
+        if (searchProgress == target) {
+            if (searchClosing) finishSearch()
+            return
+        }
+        searchAnimator = ValueAnimator.ofFloat(searchProgress, target).apply {
+            duration = (180 * abs(target - searchProgress)).toLong()
+            addUpdateListener { drawSearchProgress(it.animatedValue as Float) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    searchAnimator = null
+                    if (searchClosing) finishSearch()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun finishSearch() {
+        stopSearchAnimation()
+        search = false
+        reload()
+    }
+
     @Deprecated("Back on Android 12")
     override fun onBackPressed() = back()
 
     private fun back() {
         when {
+            searchPanel != null -> {
+                if (searchClosing) return
+                closeKeyboard()
+                invalidatePrivate()
+                if (reduced) finishSearch()
+                else {
+                    searchClosing = true
+                    animateSearch(0f)
+                }
+                return
+            }
             search || library -> { closeKeyboard(); invalidatePrivate(); search = false; library = false }
             pageVisibilityDraft != null -> pageVisibilityDraft = null
             folderPresentation != null -> { closeFolder(); return }
@@ -1150,6 +1233,7 @@ class HomeActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (searchClosing && event.actionMasked == MotionEvent.ACTION_DOWN) finishSearch()
         if (folderPresentation != null && folder == null) return true
         if (::gesture.isInitialized && !search && !library && pageVisibilityDraft == null && gesture.handle(event)) return true
         return super.dispatchTouchEvent(event)

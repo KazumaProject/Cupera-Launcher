@@ -52,7 +52,7 @@ class AppBrowser(
         drawResults()
     }
 
-    fun view(search: Boolean): View {
+    fun view(search: Boolean, useHomeBackdrop: Boolean = false): View {
         isSearch = search
         val root = host.vertical().apply {
             setPadding(host.dp(16), 0, host.dp(16), 0)
@@ -111,12 +111,18 @@ class AppBrowser(
             }, 120)
         } else root.requestFocus()
         return android.widget.FrameLayout(host).apply {
-            addView(View(host).apply {
-                background = CuperaWallpaper(dark || store.setting("wallpaper") == "dusk")
-                val radius = host.dp(19).toFloat()
-                setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.CLAMP))
-            }, android.widget.FrameLayout.LayoutParams(-1, -1))
-            if (search) addView(View(host).apply { setBackgroundColor(0x6a101725) }, android.widget.FrameLayout.LayoutParams(-1, -1))
+            isClickable = useHomeBackdrop
+            val systemWallpaper = store.setting("wallpaper", "tide") == "system"
+            if (!useHomeBackdrop && !systemWallpaper) {
+                addView(View(host).apply {
+                    background = CuperaWallpaper(dark || store.setting("wallpaper") == "dusk")
+                    val radius = host.dp(19).toFloat()
+                    setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.CLAMP))
+                }, android.widget.FrameLayout.LayoutParams(-1, -1))
+            }
+            if (search || systemWallpaper) {
+                addView(View(host).apply { setBackgroundColor(0x6a101725) }, android.widget.FrameLayout.LayoutParams(-1, -1))
+            }
             addView(root, android.widget.FrameLayout.LayoutParams(-1, -1))
         }
     }
