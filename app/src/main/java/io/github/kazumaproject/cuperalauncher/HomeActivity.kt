@@ -81,7 +81,7 @@ class HomeActivity : Activity() {
             }
         }
     }
-    private var previewView: ScrollView? = null
+    private var previewView: PageViewport? = null
     private var dockGrid: TileGrid? = null
     private var folderGrid: TileGrid? = null
     private var browser: AppBrowser? = null
@@ -413,7 +413,7 @@ class HomeActivity : Activity() {
         gridView.populate(layout.tiles)
         grid = gridView
         val viewportHeight = totalHeight - dockHeight - dp(42) - dp(8) - gridTop
-        workspace.addView(wrapGrid(gridView), FrameLayout.LayoutParams(gridWidth, maxOf(dp(72), viewportHeight)).apply {
+        workspace.addView(PageViewport(this, gridView), FrameLayout.LayoutParams(gridWidth, maxOf(dp(72), viewportHeight)).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             topMargin = gridTop
         })
@@ -554,17 +554,31 @@ class HomeActivity : Activity() {
         startActivity(Intent(this, SettingsActivity::class.java).putExtra(SettingsActivity.EXTRA_SECTION, section))
     }
 
-    private fun wrapGrid(tiles: TileGrid, interactive: Boolean = true) = object : ScrollView(this) {
+    private class PageViewport(context: Context, val tiles: TileGrid) : ScrollView(context) {
+        var interactive = true
+            set(value) {
+                field = value
+                importantForAccessibility = if (value) IMPORTANT_FOR_ACCESSIBILITY_AUTO
+                    else IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                if (!value) findFocus()?.clearFocus()
+            }
+
+        init {
+            isVerticalScrollBarEnabled = false
+            addView(tiles, FrameLayout.LayoutParams(tiles.gridWidth, tiles.gridHeight))
+        }
+
         override fun dispatchTouchEvent(event: MotionEvent): Boolean =
             !interactive || super.dispatchTouchEvent(event)
-    }.apply {
-        isVerticalScrollBarEnabled = false
-        addView(tiles, FrameLayout.LayoutParams(tiles.gridWidth, tiles.gridHeight))
+
+        override fun addFocusables(views: ArrayList<View>, direction: Int, focusableMode: Int) {
+            if (interactive) super.addFocusables(views, direction, focusableMode)
+        }
     }
 
     private fun pageViewportContains(x: Float, y: Float): Boolean =
         grid?.viewportContains(x, y) == true ||
-            (previewView?.getChildAt(0) as? TileGrid)?.viewportContains(x, y) == true
+            previewView?.tiles?.viewportContains(x, y) == true
 
     private fun followPage(dx: Float) {
         if (reduced) return
@@ -583,10 +597,10 @@ class HomeActivity : Activity() {
         if (adjacent !in 0 until layout.pages) return
         val neighbor = TileGrid(this, adjacent, "", current.gridWidth, current.gridHeight, 4, 6, ::tileView)
         neighbor.populate(layout.tiles)
-        val primary = workspace.getChildAt(0)
-        previewView = wrapGrid(neighbor, interactive = false).apply {
+        val primary = current.parent as View
+        previewView = PageViewport(this, neighbor).apply {
             translationX = (direction * content.width).toFloat()
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            interactive = false
         }
         workspace.addView(previewView, FrameLayout.LayoutParams(primary.layoutParams as FrameLayout.LayoutParams))
     }
@@ -1105,12 +1119,29 @@ class HomeActivity : Activity() {
         revealPageIndicator()
         val previous = page
         val direction = if (index > previous) 1 else -1
-        val offset = if (previewPage == index && previewView != null) workspace.translationX + direction * content.width
+        val preview = previewView?.takeIf { previewPage == index }
+        val offset = if (preview != null) workspace.translationX + direction * content.width
             else content.width * .26f * direction
+        val duration = if (!reduced && !gesture.active) 320L else 0L
         page = index
         folder = null
+        val outgoing = grid?.parent as? PageViewport
+        if (!editing && duration > 0 && preview != null && outgoing != null) {
+            // Both pages already occupy their final relative positions in the moving viewport.
+            workspace.animate().cancel()
+            preview.translationX = 0f
+            preview.interactive = true
+            outgoing.translationX = (-direction * content.width).toFloat()
+            outgoing.interactive = false
+            grid = preview.tiles
+            previewView = outgoing
+            previewPage = previous
+            workspace.translationX = offset
+            homeFooter?.let(::fillFooter)
+            settlePage(duration)
+            return
+        }
         render()
-        val duration = if (!reduced && !gesture.active) 320L else 0L
         if (duration > 0) {
             showPagePreview(previous, -direction)
             workspace.translationX = offset
