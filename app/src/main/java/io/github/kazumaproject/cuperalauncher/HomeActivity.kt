@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.content.pm.LauncherApps
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.drawable.InsetDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -23,6 +24,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.WindowInsetsController
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -43,6 +45,18 @@ class HomeActivity : Activity() {
     private lateinit var dock: FrameLayout
     private var grid: TileGrid? = null
     private var previewPage = -1
+    private var homeFooter: LinearLayout? = null
+    private var pageIndicatorVisible = false
+    private val restoreSearch = Runnable {
+        pageIndicatorVisible = false
+        homeFooter?.let { footer ->
+            fillFooter(footer)
+            if (!editing && !reduced) footer.getChildAt(0)?.apply {
+                alpha = 0f
+                animate().alpha(1f).setDuration(220).start()
+            }
+        }
+    }
     private var previewView: View? = null
     private var dockGrid: TileGrid? = null
     private var folderGrid: TileGrid? = null
@@ -184,6 +198,7 @@ class HomeActivity : Activity() {
             editing = false
             library = false
             search = false
+            resetPageIndicator()
             invalidatePrivate()
             render()
         }
@@ -269,6 +284,7 @@ class HomeActivity : Activity() {
         if (!::gesture.isInitialized || content.width == 0 || isFinishing) return
         content.removeAllViews()
         browser = null
+        homeFooter = null
         folderGrid = null
         val systemWallpaper = store.setting("wallpaper", "tide") == "system"
         if (systemWallpaper) window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
@@ -296,13 +312,14 @@ class HomeActivity : Activity() {
         val horizontalMargin = dp(18)
         val dockHeight = if (store.settingEnabled("dock")) min(dp(114), totalHeight / 4) else 0
         val footerHeight = dp(44)
-        val gridTop = dp(if (editing) 46 else 26)
+        val gridTop = dp(26)
         val gridHeight = maxOf(dp(64) * 6, totalHeight - dockHeight - footerHeight - gridTop - dp(30))
         val gridWidth = maxOf(dp(220), totalWidth - horizontalMargin * 2)
         val gridView = TileGrid(this, page, "", gridWidth, gridHeight, 4, 6, ::tileView)
         gridView.populate(layout.tiles)
         grid = gridView
-        workspace.addView(wrapGrid(gridView), FrameLayout.LayoutParams(gridWidth, maxOf(dp(72), totalHeight - dockHeight - footerHeight - gridTop)).apply {
+        val viewportHeight = totalHeight - dockHeight - dp(42) - dp(8) - gridTop
+        workspace.addView(wrapGrid(gridView), FrameLayout.LayoutParams(gridWidth, maxOf(dp(72), viewportHeight)).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             topMargin = gridTop
         })
@@ -321,8 +338,10 @@ class HomeActivity : Activity() {
         }
         footer(dockHeight)
         if (editing) {
-            content.addView(pill("Add Widget") { widgets.choose(page) }, FrameLayout.LayoutParams(-2, dp(42), Gravity.TOP or Gravity.START).apply { marginStart = dp(18) })
-            content.addView(pill("Done") { editing = false; reload() }, FrameLayout.LayoutParams(-2, dp(42), Gravity.TOP or Gravity.END).apply { marginEnd = dp(18) })
+            val addWidget = pill("Add Widget") { widgets.choose(page) }.apply { minHeight = 0 }
+            val done = pill("Done") { editing = false; reload() }.apply { minHeight = 0 }
+            content.addView(addWidget, FrameLayout.LayoutParams(-2, gridTop, Gravity.TOP or Gravity.START).apply { marginStart = dp(18) })
+            content.addView(done, FrameLayout.LayoutParams(-2, gridTop, Gravity.TOP or Gravity.END).apply { marginEnd = dp(18) })
         }
         folder?.let(::drawFolder)
         gesture.draw()
@@ -354,27 +373,88 @@ class HomeActivity : Activity() {
     }
 
     private fun settlePage() {
-        workspace.animate().translationX(0f).setDuration(if (reduced) 0 else 160).withEndAction {
+        val duration = if (reduced) 0L else 160L
+        workspace.animate().translationX(0f).setDuration(duration).withEndAction {
             previewView?.let(workspace::removeView)
             previewView = null
             previewPage = -1
         }.start()
+        scheduleSearch(duration)
     }
 
     private fun footer(dockHeight: Int) {
         val bar = horizontal().apply { gravity = Gravity.CENTER }
+        homeFooter = bar
+        fillFooter(bar)
+        content.addView(bar, FrameLayout.LayoutParams(-1, dp(42), Gravity.BOTTOM).apply {
+            bottomMargin = dockHeight + dp(8)
+        })
+    }
+
+    private fun fillFooter(bar: LinearLayout) {
+        bar.removeAllViews()
         if (editing) {
             bar.addView(label("${page + 1}  /  ${maxOf(layout.pages, page + 1)}", 14f, Color.WHITE).apply { gravity = Gravity.CENTER })
         } else {
-            if (store.settingEnabled("page_dots") && layout.pages > 1) {
-                bar.addView(pill((0 until min(layout.pages, 8)).joinToString(" ") { if (it == page) "●" else "·" }) {
+            val searchButton = store.settingEnabled("search_button")
+            val dots = store.settingEnabled("page_dots") && layout.pages > 1 && (pageIndicatorVisible || !searchButton)
+            if (dots) {
+                bar.addView(footerPill((0 until min(layout.pages, 8)).joinToString(" ") { if (it == page) "●" else "·" }) {
                     switchPage(if (page + 1 == layout.pages) 0 else page + 1)
                 }.apply { contentDescription = "Page ${page + 1} of ${this@HomeActivity.layout.pages}. Next page" })
             }
-            if (store.settingEnabled("search_button")) bar.addView(pill("⌕  Search") { showBrowser(true) })
-            else bar.addView(pill("Library") { showBrowser(false) })
+            if (!searchButton) bar.addView(footerPill("Library") { showBrowser(false) })
+            else if (!dots) bar.addView(footerPill("⌕  Search") { showBrowser(true) }.apply {
+                accessibilityDelegate = object : View.AccessibilityDelegate() {
+                    override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                        super.onInitializeAccessibilityNodeInfo(host, info)
+                        info.isScrollable = this@HomeActivity.layout.pages > 1
+                        if (page > 0) info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                        if (page + 1 < this@HomeActivity.layout.pages) {
+                            info.addAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                        }
+                    }
+
+                    override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
+                        val next = when (action) {
+                            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> page - 1
+                            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> page + 1
+                            else -> return super.performAccessibilityAction(host, action, args)
+                        }
+                        if (next !in 0 until this@HomeActivity.layout.pages) return false
+                        switchPage(next)
+                        return true
+                    }
+                }
+            })
         }
-        content.addView(bar, FrameLayout.LayoutParams(-1, dp(42), Gravity.BOTTOM).apply { bottomMargin = dockHeight + dp(8) })
+    }
+
+    private fun revealPageIndicator() {
+        handler.removeCallbacks(restoreSearch)
+        if (editing || pageIndicatorVisible || layout.pages <= 1 || !store.settingEnabled("page_dots") ||
+            !store.settingEnabled("search_button")) return
+        pageIndicatorVisible = true
+        homeFooter?.let(::fillFooter)
+    }
+
+    private fun scheduleSearch(settleDuration: Long) {
+        if (pageIndicatorVisible && !isDestroyed) {
+            handler.removeCallbacks(restoreSearch)
+            handler.postDelayed(restoreSearch, settleDuration + 550)
+        }
+    }
+
+    private fun resetPageIndicator() {
+        handler.removeCallbacks(restoreSearch)
+        pageIndicatorVisible = false
+    }
+
+    private fun footerPill(title: String, action: () -> Unit) = pill(title, action).apply {
+        minWidth = dp(74)
+        textSize = 12f
+        setPadding(dp(10), 0, dp(10), 0)
+        background = InsetDrawable(rounded(0x42ffffff, dp(14).toFloat()), 0, dp(7), 0, dp(7))
     }
 
     private fun pill(title: String, action: () -> Unit) = label(title, 14f, Color.WHITE, true).apply {
@@ -496,6 +576,7 @@ class HomeActivity : Activity() {
     private fun closeKeyboard() { getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0) }
 
     private fun showBrowser(forSearch: Boolean) {
+        resetPageIndicator()
         editing = false
         folder = null
         library = !forSearch
@@ -677,16 +758,19 @@ class HomeActivity : Activity() {
         if (index < 0 || index == page) { settlePage(); return }
         if (!editing && index >= layout.pages) { showBrowser(false); return }
         if (index >= Layout.MAX_PAGES || index > layout.pages) return
+        revealPageIndicator()
         val direction = if (index > page) 1 else -1
         val offset = if (previewPage == index && previewView != null) workspace.translationX + direction * content.width
             else content.width * .26f * direction
         page = index
         folder = null
         render()
-        if (!reduced && !gesture.active) {
+        val duration = if (!reduced && !gesture.active) 225L else 0L
+        if (duration > 0) {
             workspace.translationX = offset
-            workspace.animate().translationX(0f).setDuration(225).start()
+            workspace.animate().translationX(0f).setDuration(duration).start()
         }
+        scheduleSearch(duration)
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -739,13 +823,20 @@ class HomeActivity : Activity() {
             }
         }
 
-        fun slot(x: Float, y: Float): Slot? {
-            if (!isAttachedToWindow) return null
+        fun viewportContains(x: Float, y: Float): Boolean =
+            (parent as? View)?.let { contains(it, x, y) } ?: false
+
+        private fun contains(view: View, x: Float, y: Float): Boolean {
+            if (!view.isAttachedToWindow) return false
             val visible = Rect()
-            if (!getGlobalVisibleRect(visible)) return null
+            if (!view.getGlobalVisibleRect(visible)) return false
+            val root = IntArray(2).also(view.rootView::getLocationOnScreen)
+            return visible.contains(x.toInt() - root[0], y.toInt() - root[1])
+        }
+
+        fun slot(x: Float, y: Float): Slot? {
+            if (!contains(this, x, y)) return null
             val window = IntArray(2).also(::getLocationOnScreen)
-            val root = IntArray(2).also(rootView::getLocationOnScreen)
-            if (!visible.contains(x.toInt() - root[0], y.toInt() - root[1])) return null
             val localX = x - window[0]
             val localY = y - window[1]
             if (localX < 0 || localY < 0 || localX >= widthPerCell * columns || localY >= heightPerCell * rows) return null
@@ -755,6 +846,7 @@ class HomeActivity : Activity() {
 
     private class HomeGesture(private val host: HomeActivity) {
         private val slop = ViewConfiguration.get(host).scaledTouchSlop
+        private val holdSlop = slop / 2f
         private var startX = 0f
         private var startY = 0f
         private var x = 0f
@@ -798,9 +890,12 @@ class HomeActivity : Activity() {
                     cancel()
                     startX = x
                     startY = y
-                    val s = slot(x, y) ?: return false
+                    val s = slot(x, y)
+                    if (s == null && (host.folder != null || host.editing || host.grid?.viewportContains(x, y) != true)) {
+                        return false
+                    }
                     tracking = true
-                    origin = host.layout.at(s)
+                    origin = s?.let(host.layout::at)
                     revision = host.layout.revision
                     if (origin == null) host.handler.postDelayed(hold, ViewConfiguration.getLongPressTimeout().toLong())
                 }
@@ -813,8 +908,9 @@ class HomeActivity : Activity() {
                     if (!tracking || verticalScroll) return false
                     val dx = x - startX
                     val dy = y - startY
-                    if (abs(dx) + abs(dy) <= slop && !active) return emptyHold
-                    host.handler.removeCallbacks(hold)
+                    val distance = abs(dx) + abs(dy)
+                    if (distance > holdSlop) host.handler.removeCallbacks(hold)
+                    if (distance <= slop && !active) return emptyHold
                     if (!active) {
                         val tile = origin
                         if (host.editing && tile != null) {
@@ -823,6 +919,7 @@ class HomeActivity : Activity() {
                             draw()
                         } else if (host.folder == null && abs(dx) > abs(dy) * 1.2f) {
                             paging = true
+                            host.revealPageIndicator()
                             host.cancelChild(event)
                         } else {
                             verticalScroll = true
@@ -835,7 +932,8 @@ class HomeActivity : Activity() {
                         }
                     }
                     if (paging) {
-                        host.followPage(dx)
+                        val travel = Math.copySign((abs(dx) - slop).coerceAtLeast(0f), dx)
+                        host.followPage(travel)
                         return true
                     }
                     updateDrag()
