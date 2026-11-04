@@ -467,8 +467,32 @@ class LauncherScreenTest {
                     destination[1] = origin[0] + pager.width * .83f
                     destination[2] = origin[1] + pager.height * .83f
                 }
-                val drag = SystemClock.uptimeMillis()
                 val automation = instrumentation.uiAutomation
+                val animates = android.animation.ValueAnimator.areAnimatorsEnabled() && store.setting("motion") != "reduced"
+                val interrupted = SystemClock.uptimeMillis()
+                touch(interrupted, MotionEvent.ACTION_DOWN, sourceX, sourceY, automation)
+                try {
+                    SystemClock.sleep(32)
+                    touch(interrupted, MotionEvent.ACTION_MOVE, destination[0], destination[2], automation)
+                    waitFor(home) { views -> views.filterIsInstance<FolderPager>().any { pager ->
+                        val stride = (pager.getChildAt(0).width - pager.width) / 2
+                        if (animates) pager.scrollX in 1 until stride else pager.scrollX == stride
+                    } }
+                } finally {
+                    touch(interrupted, MotionEvent.ACTION_CANCEL, destination[0], destination[2], automation)
+                }
+                SystemClock.sleep(800)
+                expectPage(2, "Folder app 10", "Folder app 1", count = 3)
+                assertEquals(installed, store.read())
+                onMain {
+                    val indicator = descendants(home.window.decorView).first { it.contentDescription == "Folder page 2 of 3" }
+                    assertTrue(indicator.performClick())
+                    assertTrue(indicator.performClick())
+                }
+                expectPage(1, "Folder app 1", "Folder app 10", count = 3)
+                waitFor(home) { views -> views.filterIsInstance<FolderPager>().any { !it.canScrollHorizontally(-1) } }
+
+                val drag = SystemClock.uptimeMillis()
                 touch(drag, MotionEvent.ACTION_DOWN, sourceX, sourceY, automation)
                 var released = false
                 try {
@@ -476,7 +500,7 @@ class LauncherScreenTest {
                     touch(drag, MotionEvent.ACTION_MOVE, destination[0], destination[2], automation)
                     expectPage(2, "Folder app 10", "Folder app 1", count = 3)
                     expectPage(3, null, "Folder app 10", count = 3)
-                    waitFor(home) { views -> views.filterIsInstance<FolderPager>().any { it.scrollX == it.width * 2 } }
+                    waitFor(home) { views -> views.filterIsInstance<FolderPager>().any { !it.canScrollHorizontally(1) } }
                     assertEquals(installed, store.read())
                     touch(drag, MotionEvent.ACTION_MOVE, destination[1], destination[2], automation)
                     touch(drag, MotionEvent.ACTION_UP, destination[1], destination[2], automation)

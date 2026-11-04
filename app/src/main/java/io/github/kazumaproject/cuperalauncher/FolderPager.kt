@@ -34,6 +34,8 @@ internal class FolderPager(
     private var multiplePointers = false
     private var settle: ValueAnimator? = null
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val pageGap = (pageWidth * .105f).roundToInt()
+    private val pageStride = pageWidth + pageGap
 
     init {
         isHorizontalScrollBarEnabled = false
@@ -41,14 +43,18 @@ internal class FolderPager(
         layoutDirection = View.LAYOUT_DIRECTION_LTR
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            pages.forEach { addView(it, LinearLayout.LayoutParams(pageWidth, -1)) }
+            pages.forEachIndexed { index, page ->
+                addView(page, LinearLayout.LayoutParams(pageWidth, -1).apply {
+                    if (index < pages.lastIndex) rightMargin = pageGap
+                })
+            }
         }, LayoutParams(-2, -1))
         updateAccessibility()
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
-        if (changed) scrollTo(selected * pageWidth, 0)
+        if (changed) scrollTo(selected * pageStride, 0)
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -66,12 +72,12 @@ internal class FolderPager(
         }
         val handled = super.dispatchTouchEvent(event)
         when (event.actionMasked) {
-            MotionEvent.ACTION_UP -> if (!flung && scrollX != selected * pageWidth) {
+            MotionEvent.ACTION_UP -> if (!flung && scrollX != selected * pageStride) {
                 // A batched MOVE may miss the frame before UP. Use the finger's final position.
                 val travel = gestureStartX - event.x
                 val position = if (multiplePointers) scrollX.toFloat() else
                     gestureStartScroll + (abs(travel) - touchSlop).coerceAtLeast(0f) * sign(travel)
-                val nearest = (position / pageWidth).roundToInt()
+                val nearest = (position / pageStride).roundToInt()
                 showPage(nearest.coerceIn(gesturePage - 1, gesturePage + 1))
             }
             MotionEvent.ACTION_CANCEL -> showPage(gesturePage)
@@ -91,7 +97,7 @@ internal class FolderPager(
             updateAccessibility()
             onPageChanged(next)
         }
-        val target = next * pageWidth
+        val target = next * pageStride
         settle?.cancel()
         settle = null
         if (reducedMotion() || target == scrollX) {
