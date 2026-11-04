@@ -180,7 +180,10 @@ class LauncherScreenTest {
                         (it.parent as View).scaleX == 1f
                 } }
                 instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-                waitFor(home) { views -> views.none { it.contentDescription == "Folder. Rename folder" } }
+                waitFor(home) { views ->
+                    views.none { it.contentDescription == "Folder. Rename folder" } &&
+                        views.any { it.contentDescription == "Folder" && it.alpha == 1f }
+                }
                 assertEquals(saved, workspace.read())
             } finally {
                 onMain { home.finish() }
@@ -211,7 +214,10 @@ class LauncherScreenTest {
                     assertTrue("Back must be sent before the folder is fully open", (title.parent as View).scaleX < 1f)
                     home.onBackPressed()
                 }
-                waitFor(home) { views -> views.none { it.contentDescription == "Folder. Rename folder" } }
+                waitFor(home) { views ->
+                    views.none { it.contentDescription == "Folder. Rename folder" } &&
+                        views.any { it.contentDescription == "Folder" && it.alpha == 1f }
+                }
                 assertEquals(saved, store.read())
             } finally {
                 activity?.let { home -> onMain { home.finish() } }

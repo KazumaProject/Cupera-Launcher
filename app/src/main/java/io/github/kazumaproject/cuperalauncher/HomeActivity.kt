@@ -58,7 +58,9 @@ class HomeActivity : Activity() {
     private var hiddenPages = emptySet<Int>()
     private var pageVisibilityDraft: Set<Int>? = null
     private val visiblePages get() = layout.visiblePages(hiddenPages)
+    private var homeLayer: FrameLayout? = null
     private var folderAnchor: Rect? = null
+    private var openedFolderTile: View? = null
     private var folderPresentation: FolderPresentation? = null
     private val folderBlurEffects by lazy {
         List(13) { level ->
@@ -311,6 +313,8 @@ class HomeActivity : Activity() {
             it.backdropAnimator?.cancel()
         }
         folderPresentation = null
+        homeLayer = null
+        openedFolderTile = null
         content.removeAllViews()
         editToolbar?.let(root::removeView)
         editToolbar = null
@@ -349,6 +353,7 @@ class HomeActivity : Activity() {
             page = visiblePages.lastOrNull { it < page } ?: visiblePages.first()
         }
         val homeLayer = FrameLayout(this)
+        this.homeLayer = homeLayer
         content.addView(homeLayer, FrameLayout.LayoutParams(-1, -1))
         workspace = FrameLayout(this).apply { clipChildren = false }
         homeLayer.addView(workspace, FrameLayout.LayoutParams(-1, -1))
@@ -684,12 +689,15 @@ class HomeActivity : Activity() {
         frame.setOnClickListener {
             when {
                 editing && tile.kind != TileKind.FOLDER -> tileMenu(frame, tile)
-                tile.kind == TileKind.FOLDER -> openFolder(tile, icon)
+                tile.kind == TileKind.FOLDER -> openFolder(tile, frame, icon)
                 tile.key != null -> launch(tile.key, icon, null)
             }
         }
         frame.setOnLongClickListener { tileMenu(frame, tile); true }
-        if (tile.id == folder) frame.alpha = 0f
+        if (tile.id == folder) {
+            frame.alpha = 0f
+            openedFolderTile = frame
+        }
         if (editing && !reduced) frame.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             private val shake = ObjectAnimator.ofFloat(icon, View.ROTATION, -1.35f, 1.35f).apply {
                 duration = 165
@@ -777,11 +785,15 @@ class HomeActivity : Activity() {
         var backdropAnimator: ValueAnimator? = null
     }
 
-    private fun openFolder(tile: Tile, icon: View) {
+    private fun openFolder(tile: Tile, frame: View, icon: View) {
+        val homeLayer = homeLayer ?: return
+        if (layout.tiles.none { it.id == tile.id }) return
         val origin = IntArray(2).also(icon::getLocationOnScreen)
         folderAnchor = Rect(origin[0], origin[1], origin[0] + icon.width, origin[1] + icon.height)
         folder = tile.id
-        render()
+        openedFolderTile = frame
+        frame.alpha = 0f
+        drawFolder(tile.id, homeLayer)
         revealFolder()
     }
 
@@ -862,15 +874,14 @@ class HomeActivity : Activity() {
     }
 
     private fun closeFolder() {
-        val presentation = folderPresentation
-        if (folder == null || presentation == null || reduced) {
-            folder = null
-            folderAnchor = null
-            render()
-            return
-        }
+        val presentation = folderPresentation ?: return
+        val animate = folder != null && !reduced
         folder = null
         folderAnchor = null
+        if (!animate) {
+            dismissFolder(presentation)
+            return
+        }
         val card = presentation.card
         val title = presentation.title
         val duration = 205L
@@ -880,11 +891,22 @@ class HomeActivity : Activity() {
         card.animate().cancel()
         card.animate().translationX(presentation.collapsedX).translationY(presentation.collapsedY)
             .scaleX(presentation.collapsedScale).scaleY(presentation.collapsedScale)
-            .setInterpolator(PathInterpolator(.43f, .02f, .7f, .63f)).setDuration(duration).withEndAction {
-            if (presentation.overlay.parent === content && folderPresentation === presentation) {
-                render()
-            }
-        }.start()
+            .setInterpolator(PathInterpolator(.43f, .02f, .7f, .63f)).setDuration(duration)
+            .withEndAction { dismissFolder(presentation) }.start()
+    }
+
+    private fun dismissFolder(presentation: FolderPresentation) {
+        if (folderPresentation !== presentation) return
+        presentation.card.animate().cancel()
+        presentation.title.animate().cancel()
+        presentation.backdropAnimator?.cancel()
+        setFolderBackdrop(presentation, 0)
+        presentation.backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+        content.removeView(presentation.overlay)
+        openedFolderTile?.alpha = 1f
+        openedFolderTile = null
+        folderPresentation = null
+        folderGrid = null
     }
 
     private fun revealFolder() {
