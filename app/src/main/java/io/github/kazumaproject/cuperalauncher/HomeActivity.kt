@@ -47,6 +47,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 private const val FOLDER_PAGE_SIZE = 9
+private const val RETURN_FADE_START = .72f
 
 class HomeActivity : Activity() {
     private lateinit var store: Workspace
@@ -111,14 +112,14 @@ class HomeActivity : Activity() {
             if (step == 0) null else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
         }
     }
-    private class HomeReturn(val backdrop: View) {
+    private class HomeReturn(val backdrop: View, val fade: Boolean) {
         var animator: ValueAnimator? = null
     }
     private var externalLaunchPending = false
     private var homeReturn: HomeReturn? = null
     private val returnBlurEffects by lazy {
         List(8) { step ->
-            val radius = dp(14) * step / 7f
+            val radius = dp(8) * step / 7f
             if (step == 0) null else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
         }
     }
@@ -236,7 +237,7 @@ class HomeActivity : Activity() {
         super.onStart()
         widgets.start()
         val presentation = homeReturn ?: return
-        if (reduced || !apps.hasHome()) {
+        if (!canSettleHomeReturn(presentation)) {
             finishHomeReturn()
             return
         }
@@ -275,29 +276,42 @@ class HomeActivity : Activity() {
         super.onStop()
         val launched = externalLaunchPending
         externalLaunchPending = false
-        if (!launched || reduced || !apps.hasHome()) return
+        if (!launched || !ValueAnimator.areAnimatorsEnabled() || !apps.hasHome()) return
         val backdrop = homeLayer ?: return
-        // Prepare our own surface while it is hidden, before Android reveals it again.
-        backdrop.setRenderEffect(returnBlurEffects.last())
-        homeReturn = HomeReturn(backdrop)
+        val fade = reduced
+        // Stage only Home content. Android composes the other app and the wallpaper.
+        if (fade) backdrop.alpha = RETURN_FADE_START
+        else backdrop.setRenderEffect(returnBlurEffects.last())
+        homeReturn = HomeReturn(backdrop, fade)
     }
+
+    private fun canSettleHomeReturn(presentation: HomeReturn): Boolean =
+        ValueAnimator.areAnimatorsEnabled() && reduced == presentation.fade && apps.hasHome()
 
     private fun settleHomeReturn(presentation: HomeReturn) {
         if (homeReturn !== presentation || presentation.animator != null) return
-        if (reduced || !apps.hasHome()) {
+        if (!canSettleHomeReturn(presentation)) {
             finishHomeReturn()
             return
         }
-        presentation.animator = ValueAnimator.ofInt(returnBlurEffects.lastIndex, 0).apply {
-            duration = 190
-            var lastStep = returnBlurEffects.lastIndex
-            addUpdateListener {
-                val step = it.animatedValue as Int
-                if (step != lastStep) {
-                    lastStep = step
-                    presentation.backdrop.setRenderEffect(returnBlurEffects[step])
+        presentation.animator = (if (presentation.fade) {
+            ValueAnimator.ofFloat(RETURN_FADE_START, 1f).apply {
+                duration = 80
+                addUpdateListener { presentation.backdrop.alpha = it.animatedValue as Float }
+            }
+        } else {
+            ValueAnimator.ofInt(returnBlurEffects.lastIndex, 0).apply {
+                duration = 120
+                var lastStep = returnBlurEffects.lastIndex
+                addUpdateListener {
+                    val step = it.animatedValue as Int
+                    if (step != lastStep) {
+                        lastStep = step
+                        presentation.backdrop.setRenderEffect(returnBlurEffects[step])
+                    }
                 }
             }
+        }).apply {
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     presentation.animator = null
@@ -313,7 +327,8 @@ class HomeActivity : Activity() {
         homeReturn = null
         presentation.animator?.removeAllListeners()
         presentation.animator?.cancel()
-        presentation.backdrop.setRenderEffect(null)
+        if (presentation.fade) presentation.backdrop.alpha = 1f
+        else presentation.backdrop.setRenderEffect(null)
     }
 
     override fun onDestroy() {

@@ -467,17 +467,45 @@ class LauncherScreenTest {
     }
 
     @Test fun relockingPrivateSpaceDuringSearchKeepsItsAppsOutOfResults() {
-        val fixture = InstrumentationRegistry.getArguments().getString("privateFixture")
-        assumeTrue("Requires an isolated emulator with an unlocked private fixture", !fixture.isNullOrBlank())
+        val arguments = InstrumentationRegistry.getArguments()
+        val fixture = arguments.getString("privateFixture")
+        assumeTrue("Requires an isolated emulator with a private fixture", !fixture.isNullOrBlank())
+        val startLocked = arguments.getString("startPrivateLocked") == "true"
         val apps = Apps(instrumentation.targetContext)
         val user = requireNotNull(apps.privateUser())
-        val title = apps.privateEntries(user).single { it.info.componentName.packageName == fixture }.title
+        if (startLocked) assertFalse(apps.privateUnlocked(user))
         val home = open(HomeActivity::class.java)
         try {
-            waitFor(home) { views -> views.any { it is TextView && it.text == "⌕  Search" } }
+            fun click(text: String) {
+                waitFor(home) { views ->
+                    home.hasWindowFocus() && views.any { it is TextView && it.isShown && it.text == text }
+                }
+                onMain {
+                    val control = descendants(home.window.decorView).filterIsInstance<TextView>()
+                        .first { it.isShown && it.text == text }
+                    assertTrue(control.performClick())
+                }
+            }
+            if (startLocked) {
+                click("⌕  Search")
+                click("Library")
+                click("Unlock Private Space")
+                waitFor(home) { views ->
+                    home.hasWindowFocus() && apps.privateUnlocked(user) &&
+                        views.any { it is TextView && it.isShown && it.text == "Show apps" } &&
+                        apps.privateEntries(user).any { it.info.componentName.packageName == fixture }
+                }
+            }
+            val title = apps.privateEntries(user).single { it.info.componentName.packageName == fixture }.title
+            if (startLocked) {
+                assertFalse(apps.entries().any { it.info.componentName.packageName == fixture })
+                click("Show apps")
+                waitFor(home) { views -> views.any { it.isShown && it.contentDescription == title } }
+                onMain { assertTrue(home.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0) }
+                click("‹ Home")
+            }
+            click("⌕  Search")
             onMain {
-                val search = descendants(home.window.decorView).filterIsInstance<TextView>().first { it.text == "⌕  Search" }
-                assertTrue(search.performClick())
                 descendants(home.window.decorView).filterIsInstance<EditText>().first().setText(title)
             }
             waitFor(home) { views -> views.any { it is TextView && it.text == "No apps found" } }
@@ -496,7 +524,10 @@ class LauncherScreenTest {
                 assertFalse(descendants(home.window.decorView).filterIsInstance<TextView>()
                     .any { it !is EditText && it.text.toString() == title })
             }
-        } finally { onMain { home.finish() } }
+        } finally {
+            if (startLocked && apps.privateUnlocked(user)) apps.requestPrivate(user, locked = true)
+            onMain { home.finish() }
+        }
     }
 
     @Test fun settingsOpensItsDisplaySection() {
