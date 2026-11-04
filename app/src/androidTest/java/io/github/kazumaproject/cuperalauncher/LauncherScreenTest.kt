@@ -847,12 +847,15 @@ class LauncherScreenTest {
         return point[0] to point[1]
     }
 
-    private fun touch(down: Long, action: Int, x: Float, y: Float, automation: UiAutomation? = null, sync: Boolean = true) {
+    private fun touch(
+        down: Long, action: Int, x: Float, y: Float, automation: UiAutomation = instrumentation.uiAutomation,
+        sync: Boolean = true
+    ) {
         val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0)
         event.source = InputDevice.SOURCE_TOUCHSCREEN
         try {
-            if (automation == null) instrumentation.sendPointerSync(event)
-            else assertTrue("Could not inject ${MotionEvent.actionToString(action)}", automation.injectInputEvent(event, sync))
+            // Gesture navigation also dispatches these events to the system's swipe monitor.
+            assertTrue("Could not inject ${MotionEvent.actionToString(action)}", automation.injectInputEvent(event, sync))
         } finally { event.recycle() }
     }
 
