@@ -24,6 +24,8 @@ class SettingsActivity : Activity() {
     private lateinit var apps: Apps
     private lateinit var content: LinearLayout
     private var section: String? = null
+    private val entrySection get() = intent.getStringExtra(EXTRA_SECTION)
+        ?.takeIf { it == "Icons & Dock" || it == "Wallpaper & Appearance" }
     private var dark = false
     private val profileEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -38,7 +40,7 @@ class SettingsActivity : Activity() {
         super.onCreate(state)
         store = Workspace(this)
         apps = Apps(this)
-        section = state?.getString("section")
+        section = if (state == null) entrySection else state.getString("section")
         registerReceiver(profileEvents, IntentFilter().apply {
             addAction(Intent.ACTION_PROFILE_AVAILABLE)
             addAction(Intent.ACTION_PROFILE_UNAVAILABLE)
@@ -57,7 +59,7 @@ class SettingsActivity : Activity() {
     @Deprecated("Back on Android 12")
     override fun onBackPressed() = back()
 
-    private fun back() { if (section == null) finish() else open(null) }
+    private fun back() { if (section == null || section == entrySection) finish() else open(null) }
 
     private fun open(value: String?) {
         val forward = value != null
@@ -76,9 +78,9 @@ class SettingsActivity : Activity() {
         systemBars(root, dark)
         val current = section
         val toolbar = horizontal().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
-        toolbar.addView(label(if (current == null) "‹ Close" else "‹ Settings", 16f, accent).apply {
+        toolbar.addView(label(if (current == null || current == entrySection) "‹ Close" else "‹ Settings", 16f, accent).apply {
             minHeight = dp(48)
-            setOnClickListener { if (current == null) finish() else open(null) }
+            setOnClickListener { back() }
         })
         root.addView(toolbar)
         content = vertical().apply { setPadding(dp(16), 0, dp(16), dp(24)) }
@@ -121,7 +123,7 @@ class SettingsActivity : Activity() {
             }
             "Widgets" -> group {
                 toggle("Show seconds in Cupera Clock", "widget_seconds", false)
-                row("Add a widget", "Open Home, touch and hold an empty area, then select Add Widget.")
+                row("Add a widget", "Touch and hold an empty area on Home, then choose Edit and Add Widget.")
             }
             "Search & App Library" -> group {
                 toggle("Show Search on Home", "search_button")
@@ -300,6 +302,7 @@ class SettingsActivity : Activity() {
     }
 
     companion object {
+        internal const val EXTRA_SECTION = "io.github.kazumaproject.cuperalauncher.extra.SETTINGS_SECTION"
         private const val EXPORT = 201
         private const val IMPORT = 202
         private val sections = listOf(

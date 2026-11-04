@@ -1,8 +1,11 @@
 package io.github.kazumaproject.cuperalauncher
 
 import android.app.Activity
+import android.app.UiAutomation
 import android.content.Intent
 import android.os.SystemClock
+import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -26,16 +29,19 @@ class LauncherScreenTest {
             val (x, y) = whitespaceBelowGrid(home)
             val width = home.resources.displayMetrics.widthPixels
             val duration = maxOf(600L, ViewConfiguration.getLongPressTimeout() * 2L)
+            val automation = instrumentation.uiAutomation
+            val moveTimes = mutableListOf<Long>()
             val down = SystemClock.uptimeMillis()
-            touch(down, MotionEvent.ACTION_DOWN, x, y)
+            touch(down, MotionEvent.ACTION_DOWN, x, y, automation)
             for (sample in 1..12) {
                 SystemClock.sleep(maxOf(0L, down + sample * duration / 12 - SystemClock.uptimeMillis()))
-                touch(down, MotionEvent.ACTION_MOVE, x + width * .03f * sample / 12, y)
+                moveTimes.add(SystemClock.uptimeMillis() - down)
+                touch(down, MotionEvent.ACTION_MOVE, x + width * .03f * sample / 12, y, automation, sync = false)
             }
-            touch(down, MotionEvent.ACTION_UP, x + width * .03f, y)
+            touch(down, MotionEvent.ACTION_UP, x + width * .03f, y, automation)
             onMain {
-                assertFalse(descendants(home.window.decorView).filterIsInstance<TextView>()
-                    .any { it.text == "Add Widget" })
+                assertFalse("Move events injected at ${moveTimes.joinToString()} ms", descendants(home.window.decorView).filterIsInstance<TextView>()
+                    .any { it.text == "Edit" })
             }
         } finally { onMain { home.finish() } }
     }
@@ -54,7 +60,7 @@ class LauncherScreenTest {
             touch(down, MotionEvent.ACTION_DOWN, x, y)
             SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 100L)
             touch(down, MotionEvent.ACTION_UP, x, y)
-            waitFor(home) { views -> views.any { it is TextView && it.text == "Add Widget" && it.height > 0 } }
+            waitFor(home) { views -> views.any { it is TextView && it.text == "Edit" && it.height > 0 } }
             onMain {
                 val viewport = descendants(home.window.decorView).filterIsInstance<ScrollView>().first()
                 val location = IntArray(2).also(viewport::getLocationOnScreen)
@@ -129,11 +135,83 @@ class LauncherScreenTest {
         } finally { onMain { settings.finish() } }
     }
 
+    @Test fun cancellingFolderDragKeepsLayoutAndReleasingCreatesAnOpenableFolder() {
+        assumeTrue("Requires an isolated emulator with Photos and Play Store on Home",
+            InstrumentationRegistry.getArguments().getString("folderFixture") == "true")
+        Workspace(instrumentation.targetContext).use { workspace ->
+            val initial = workspace.read()
+            val apps = Apps(instrumentation.targetContext).entries()
+            val photosKey = apps.single { it.title == "Photos" }.key
+            val playStoreKey = apps.single { it.title == "Play Store" }.key
+            val photos = initial.tiles.single { it.key == photosKey }
+            val playStore = initial.tiles.single { it.key == playStoreKey }
+            assertEquals(0, photos.slot.page)
+            assertEquals(0, playStore.slot.page)
+            val home = open(HomeActivity::class.java)
+            try {
+                val (blankX, blankY) = whitespaceBelowGrid(home)
+                val hold = SystemClock.uptimeMillis()
+                touch(hold, MotionEvent.ACTION_DOWN, blankX, blankY)
+                SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 100L)
+                touch(hold, MotionEvent.ACTION_UP, blankX, blankY)
+                waitFor(home) { views -> views.any { it is TextView && it.text == "Edit" && it.height > 0 } }
+
+                val source = screenCenter(home, "Photos")
+                val destination = screenCenter(home, "Play Store")
+                dragAndHold(source, destination, MotionEvent.ACTION_CANCEL)
+                assertEquals(initial, workspace.read())
+
+                dragAndHold(source, destination, MotionEvent.ACTION_UP)
+                waitFor(home) { views -> views.any { it.contentDescription == "Folder" } }
+                val saved = workspace.read()
+                val folder = saved.tiles.single { it.kind == TileKind.FOLDER && initial.tiles.none { before -> before.id == it.id } }
+                assertEquals(setOf(photos.id, playStore.id), saved.tiles.filter { it.slot.folder == folder.id }.map { it.id }.toSet())
+                assertEquals(initial.revision + 1, saved.revision)
+                onMain {
+                    descendants(home.window.decorView).filterIsInstance<TextView>().first { it.text == "Done" }.performClick()
+                    descendants(home.window.decorView).first { it.contentDescription == "Folder" }.performClick()
+                }
+                waitFor(home) { views -> views.any { it.contentDescription == "Folder. Rename folder" } }
+                instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+                waitFor(home) { views -> views.none { it.contentDescription == "Folder. Rename folder" } }
+            } finally {
+                onMain { home.finish() }
+                val saved = workspace.read()
+                if (saved.revision == initial.revision + 1) assertTrue(workspace.save(saved.revision, initial.tiles))
+            }
+        }
+    }
+
     private fun open(type: Class<out Activity>): Activity = instrumentation.startActivitySync(
         Intent(instrumentation.targetContext, type).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     )
 
     private fun onMain(action: () -> Unit) = instrumentation.runOnMainSync(action)
+
+    private fun screenCenter(activity: Activity, description: String): Pair<Float, Float> {
+        val point = FloatArray(2)
+        onMain {
+            val view = descendants(activity.window.decorView).first { it.contentDescription == description }
+            val location = IntArray(2).also(view::getLocationOnScreen)
+            point[0] = location[0] + view.width / 2f
+            point[1] = location[1] + view.height / 2f
+        }
+        return point[0] to point[1]
+    }
+
+    private fun dragAndHold(from: Pair<Float, Float>, to: Pair<Float, Float>, finish: Int) {
+        val automation = instrumentation.uiAutomation
+        val down = SystemClock.uptimeMillis()
+        touch(down, MotionEvent.ACTION_DOWN, from.first, from.second, automation)
+        for (sample in 1..24) {
+            SystemClock.sleep(maxOf(0L, down + 50 + sample * 650 / 24 - SystemClock.uptimeMillis()))
+            val x = from.first + (to.first - from.first) * sample / 24
+            val y = from.second + (to.second - from.second) * sample / 24
+            touch(down, MotionEvent.ACTION_MOVE, x, y, automation, sync = false)
+        }
+        SystemClock.sleep(850)
+        touch(down, finish, to.first, to.second, automation)
+    }
 
     private fun whitespaceBelowGrid(home: Activity): Pair<Float, Float> {
         waitFor(home) { views -> views.any { it is ScrollView && it.height > it.getChildAt(0).bottom } }
@@ -147,9 +225,13 @@ class LauncherScreenTest {
         return point[0] to point[1]
     }
 
-    private fun touch(down: Long, action: Int, x: Float, y: Float) {
+    private fun touch(down: Long, action: Int, x: Float, y: Float, automation: UiAutomation? = null, sync: Boolean = true) {
         val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0)
-        try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+        event.source = InputDevice.SOURCE_TOUCHSCREEN
+        try {
+            if (automation == null) instrumentation.sendPointerSync(event)
+            else assertTrue("Could not inject ${MotionEvent.actionToString(action)}", automation.injectInputEvent(event, sync))
+        } finally { event.recycle() }
     }
 
     private fun waitFor(activity: Activity, predicate: (Sequence<View>) -> Boolean) {

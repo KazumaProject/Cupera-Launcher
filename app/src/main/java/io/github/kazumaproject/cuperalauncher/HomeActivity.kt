@@ -24,6 +24,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.WindowInsetsController
+import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -46,6 +47,7 @@ class HomeActivity : Activity() {
     private var grid: TileGrid? = null
     private var previewPage = -1
     private var homeFooter: LinearLayout? = null
+    private var editToolbar: LinearLayout? = null
     private var pageIndicatorVisible = false
     private val restoreSearch = Runnable {
         pageIndicatorVisible = false
@@ -124,7 +126,7 @@ class HomeActivity : Activity() {
         if (android.os.Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(false)
         widgets.restore(state)
         page = state?.getInt("page") ?: 0
-        root = FrameLayout(this)
+        root = FrameLayout(this).apply { clipToPadding = false }
         content = FrameLayout(this)
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
@@ -156,7 +158,7 @@ class HomeActivity : Activity() {
         val before = darkMode
         darkMode = dark(store)
         if (before != darkMode && browser != null) render()
-        systemBars(root, darkMode && (search || library) || !search && !library)
+        systemBars(root, darkMode && (search || library) || !search && !library, keepStatusInset = true)
         layout = store.read()
         refreshApps()
         BadgeListener.changed = { if (!editing && !search && !library && !gesture.active) render() }
@@ -283,6 +285,8 @@ class HomeActivity : Activity() {
     private fun render() {
         if (!::gesture.isInitialized || content.width == 0 || isFinishing) return
         content.removeAllViews()
+        editToolbar?.let(root::removeView)
+        editToolbar = null
         browser = null
         homeFooter = null
         folderGrid = null
@@ -295,6 +299,10 @@ class HomeActivity : Activity() {
         val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
             WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
         window.insetsController?.setSystemBarsAppearance(0, lightBars)
+        window.insetsController?.let { controller ->
+            if (editing) controller.hide(WindowInsets.Type.statusBars())
+            else controller.show(WindowInsets.Type.statusBars())
+        }
         if (isPanel) {
             val panel = AppBrowser(this, apps, entries, darkMode, store, privateOpen,
                 onBack = ::back, onLibrary = { showBrowser(false) }, onAdd = ::addApp, onPrivate = { privateOpen = it },
@@ -337,14 +345,44 @@ class HomeActivity : Activity() {
             })
         }
         footer(dockHeight)
-        if (editing) {
-            val addWidget = pill("Add Widget") { widgets.choose(page) }.apply { minHeight = 0 }
-            val done = pill("Done") { editing = false; reload() }.apply { minHeight = 0 }
-            content.addView(addWidget, FrameLayout.LayoutParams(-2, gridTop, Gravity.TOP or Gravity.START).apply { marginStart = dp(18) })
-            content.addView(done, FrameLayout.LayoutParams(-2, gridTop, Gravity.TOP or Gravity.END).apply { marginEnd = dp(18) })
-        }
+        if (editing) drawEditToolbar()
         folder?.let(::drawFolder)
         gesture.draw()
+    }
+
+    private fun drawEditToolbar() {
+        val buttonHeight = dp(48)
+        val edgeMargin = (content.width * .115f).toInt()
+        val toolbar = horizontal().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(edgeMargin, 0, edgeMargin, 0)
+        }
+        fun button(title: String) = label(title, 13f, Color.WHITE, true).apply {
+            gravity = Gravity.CENTER
+            minWidth = dp(64)
+            setPadding(dp(10), 0, dp(10), 0)
+            background = InsetDrawable(rounded(0x30ffffff, dp(14).toFloat(), 0x55ffffff), 0, dp(11), 0, dp(11))
+        }
+        val edit = button("Edit")
+        edit.setOnClickListener {
+            PopupMenu(this, edit).apply {
+                menu.add("Add Widget").setOnMenuItemClickListener { widgets.choose(page); true }
+                menu.add("Customize").setOnMenuItemClickListener { openEditSettings("Icons & Dock"); true }
+                menu.add("Edit Wallpaper").setOnMenuItemClickListener { openEditSettings("Wallpaper & Appearance"); true }
+                show()
+            }
+        }
+        toolbar.addView(edit, LinearLayout.LayoutParams(-2, buttonHeight))
+        toolbar.addView(View(this), LinearLayout.LayoutParams(0, 0, 1f))
+        toolbar.addView(button("Done").apply { setOnClickListener { editing = false; reload() } }, LinearLayout.LayoutParams(-2, buttonHeight))
+        root.addView(toolbar, FrameLayout.LayoutParams(-1, buttonHeight, Gravity.TOP).apply {
+            topMargin = dp(9) - root.paddingTop
+        })
+        editToolbar = toolbar
+    }
+
+    private fun openEditSettings(section: String) {
+        startActivity(Intent(this, SettingsActivity::class.java).putExtra(SettingsActivity.EXTRA_SECTION, section))
     }
 
     private fun wrapGrid(tiles: TileGrid) = android.widget.ScrollView(this).apply {
