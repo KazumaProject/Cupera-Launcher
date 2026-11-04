@@ -1,5 +1,6 @@
 package io.github.kazumaproject.cuperalauncher
 
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Rect
@@ -9,6 +10,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.animation.PathInterpolator
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import kotlin.math.abs
@@ -30,6 +32,7 @@ internal class FolderPager(
     private var gestureStartX = 0f
     private var gestureStartScroll = 0
     private var multiplePointers = false
+    private var settle: ValueAnimator? = null
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     init {
@@ -51,6 +54,8 @@ internal class FolderPager(
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                settle?.cancel()
+                settle = null
                 gesturePage = selected
                 gestureStartX = event.x
                 gestureStartScroll = scrollX
@@ -79,15 +84,38 @@ internal class FolderPager(
         showPage(gesturePage + if (velocityX > 0) 1 else -1)
     }
 
-    fun showPage(page: Int, animate: Boolean = true) {
+    fun showPage(page: Int, edgeTurn: Boolean = false) {
         val next = page.coerceIn(pages.indices)
         if (next != selected) {
             selected = next
             updateAccessibility()
             onPageChanged(next)
         }
-        if (animate && !reducedMotion()) smoothScrollTo(next * pageWidth, 0)
-        else scrollTo(next * pageWidth, 0)
+        val target = next * pageWidth
+        settle?.cancel()
+        settle = null
+        if (reducedMotion() || target == scrollX) {
+            scrollTo(target, 0)
+            return
+        }
+        val returning = !edgeTurn && next == gesturePage
+        settle = ValueAnimator.ofInt(scrollX, target).apply {
+            duration = when {
+                edgeTurn -> 260
+                returning -> 320
+                else -> 390
+            }
+            interpolator = if (returning) PathInterpolator(.30f, 0f, .23f, 1f)
+                else PathInterpolator(.27f, .60f, .38f, 1f)
+            addUpdateListener { scrollTo(it.animatedValue as Int, 0) }
+            start()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        settle?.cancel()
+        settle = null
+        super.onDetachedFromWindow()
     }
 
     fun edgeAt(x: Float, y: Float): Int {

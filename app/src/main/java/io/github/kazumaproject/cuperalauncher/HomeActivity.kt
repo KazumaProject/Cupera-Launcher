@@ -1099,12 +1099,14 @@ class HomeActivity : Activity() {
         val height = min((width * 1.13f).toInt(), content.height * 3 / 4)
         val inset = dp(14)
         val children = layout.tiles.filter { it.slot.folder == id }
-        val pageCount = (children.maxOfOrNull { it.slot.cell } ?: 0) / 9 + 1
+        val pageSize = 9
+        val occupiedPages = (children.maxOfOrNull { it.slot.cell } ?: 0) / pageSize + 1
+        val pageCount = if (editing) min(occupiedPages + 1, Slot(0, 0, id).capacity / pageSize) else occupiedPages
         val pageWidth = width - inset * 2
         val dotsHeight = if (pageCount > 1) dp(22) else 0
         val gridHeight = 3 * maxOf(dp(64), (height - inset * 2 - dotsHeight) / 3)
         val grids = List(pageCount) { index ->
-            TileGrid(this, 0, id, pageWidth, gridHeight, 3, 3, ::tileView, firstCell = index * 9).apply {
+            TileGrid(this, 0, id, pageWidth, gridHeight, 3, 3, ::tileView, firstCell = index * pageSize).apply {
                 // Empty rows still have to receive drops.
                 minimumHeight = gridHeight
                 populate(children)
@@ -1540,8 +1542,9 @@ class HomeActivity : Activity() {
                     host.switchPage(host.page + edge)
                     candidate = null
                 } else {
-                    host.folderPager?.showPage(host.folderPage + edge, animate = false)
-                    updateDrag()
+                    host.folderPager?.showPage(host.folderPage + edge, edgeTurn = true)
+                    edge = 0
+                    updateDrag(edgeDelay = 750)
                 }
             }
         }
@@ -1704,7 +1707,7 @@ class HomeActivity : Activity() {
             return false
         }
 
-        private fun updateDrag() {
+        private fun updateDrag(edgeDelay: Long = 430) {
             val destination = drop(x, y)
             if (destination != candidate) {
                 candidate = destination
@@ -1726,7 +1729,7 @@ class HomeActivity : Activity() {
             if (currentEdge != edge) {
                 edge = currentEdge
                 host.handler.removeCallbacks(turnPage)
-                if (edge != 0) host.handler.postDelayed(turnPage, 430)
+                if (edge != 0) host.handler.postDelayed(turnPage, edgeDelay)
             }
             position()
         }

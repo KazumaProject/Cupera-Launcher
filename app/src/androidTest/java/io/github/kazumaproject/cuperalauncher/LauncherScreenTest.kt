@@ -396,7 +396,7 @@ class LauncherScreenTest {
                 waitFor(home) { views -> views.any {
                     it.contentDescription == "Paged folder. Rename folder" && (it.parent as View).scaleX == 1f
                 } }
-                fun swipe(forward: Boolean, coalesced: Boolean = false) {
+                fun swipe(forward: Boolean, coalesced: Boolean = false, cancelled: Boolean = false) {
                     val path = FloatArray(3)
                     onMain {
                         val pager = descendants(home.window.decorView).filterIsInstance<FolderPager>().single()
@@ -423,12 +423,13 @@ class LauncherScreenTest {
                                 path[2], instrumentation.uiAutomation)
                         }
                     }
-                    touch(down, MotionEvent.ACTION_UP, to, path[2], instrumentation.uiAutomation)
+                    val finish = if (cancelled) MotionEvent.ACTION_CANCEL else MotionEvent.ACTION_UP
+                    touch(down, finish, to, path[2], instrumentation.uiAutomation)
                 }
-                fun expectPage(number: Int, shown: String, hidden: String) {
+                fun expectPage(number: Int, shown: String?, hidden: String, count: Int = 2) {
                     waitFor(home) {
                         val visible = accessibleDescendants(home.window.decorView).map { it.contentDescription }.toSet()
-                        "Folder page $number of 2" in visible && shown in visible && hidden !in visible
+                        "Folder page $number of $count" in visible && (shown == null || shown in visible) && hidden !in visible
                     }
                 }
                 expectPage(1, "Folder app 1", "Folder app 10")
@@ -439,6 +440,8 @@ class LauncherScreenTest {
                 swipe(true, coalesced = true)
                 expectPage(2, "Folder app 10", "Folder app 1")
                 swipe(false)
+                expectPage(1, "Folder app 1", "Folder app 10")
+                swipe(true, cancelled = true)
                 expectPage(1, "Folder app 1", "Folder app 10")
                 assertEquals(installed, store.read())
 
@@ -454,6 +457,7 @@ class LauncherScreenTest {
                 waitFor(home) { views -> views.any {
                     it.contentDescription == "Paged folder. Rename folder" && (it.parent as View).scaleX == 1f
                 } }
+                expectPage(1, "Folder app 1", "Folder app 10", count = 3)
                 val (sourceX, sourceY) = screenCenter(home, "Folder app 1")
                 val destination = FloatArray(3)
                 onMain {
@@ -470,17 +474,20 @@ class LauncherScreenTest {
                 try {
                     SystemClock.sleep(32)
                     touch(drag, MotionEvent.ACTION_MOVE, destination[0], destination[2], automation)
-                    expectPage(2, "Folder app 10", "Folder app 1")
+                    expectPage(2, "Folder app 10", "Folder app 1", count = 3)
+                    expectPage(3, null, "Folder app 10", count = 3)
+                    waitFor(home) { views -> views.filterIsInstance<FolderPager>().any { it.scrollX == it.width * 2 } }
+                    assertEquals(installed, store.read())
                     touch(drag, MotionEvent.ACTION_MOVE, destination[1], destination[2], automation)
                     touch(drag, MotionEvent.ACTION_UP, destination[1], destination[2], automation)
                     released = true
                 } finally {
                     if (!released) touch(drag, MotionEvent.ACTION_CANCEL, destination[0], destination[2], automation)
                 }
-                waitFor(home) { views -> views.any { it.contentDescription == "Folder page 2 of 2" } &&
-                    store.read().revision == installed.revision + 1 }
+                expectPage(3, "Folder app 1", "Folder app 10", count = 4)
+                assertEquals(installed.revision + 1, store.read().revision)
                 val moved = store.read()
-                assertEquals(Slot(0, 17, folder.id), moved.tiles.single { it.id == apps.first().id }.slot)
+                assertEquals(Slot(0, 26, folder.id), moved.tiles.single { it.id == apps.first().id }.slot)
                 assertEquals(installed.tiles.filterNot { it.id == apps.first().id }.toSet(),
                     moved.tiles.filterNot { it.id == apps.first().id }.toSet())
             } finally {
