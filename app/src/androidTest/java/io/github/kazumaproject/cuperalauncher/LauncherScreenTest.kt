@@ -88,9 +88,10 @@ class LauncherScreenTest {
                     val automation = instrumentation.uiAutomation
                     val down = SystemClock.uptimeMillis()
                     touch(down, MotionEvent.ACTION_DOWN, x, y, automation)
+                    val start = SystemClock.uptimeMillis()
                     offsets.forEachIndexed { index, offset ->
-                        SystemClock.sleep(maxOf(0L, down + (index + 1) * 30L - SystemClock.uptimeMillis()))
-                        touch(down, MotionEvent.ACTION_MOVE, x + offset, y, automation, sync = false)
+                        SystemClock.sleep(maxOf(0L, start + (index + 1) * 30L - SystemClock.uptimeMillis()))
+                        touch(down, MotionEvent.ACTION_MOVE, x + offset, y, automation)
                     }
                     touch(down, MotionEvent.ACTION_UP, x + offsets.last(), y, automation)
                 }
