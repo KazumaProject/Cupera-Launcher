@@ -737,9 +737,17 @@ class HomeActivity : Activity() {
         }
     }
 
-    private fun pageViewportContains(x: Float, y: Float): Boolean =
-        grid?.viewportContains(x, y) == true ||
-            previewView?.tiles?.viewportContains(x, y) == true
+    private fun pageViewportContains(x: Float, y: Float): Boolean {
+        val current = grid ?: return false
+        if (current.viewportContains(x, y) || previewView?.tiles?.viewportContains(x, y) == true) return true
+        if (previewView == null || workspace.translationX == 0f) return false
+        // The gap between sliding pages remains part of the gesture area.
+        val viewport = current.parent as? View ?: return false
+        val position = IntArray(2).also(viewport::getLocationOnScreen)
+        val left = position[0] - workspace.translationX
+        return x >= left && x < left + viewport.width &&
+            y >= position[1] && y < position[1] + viewport.height
+    }
 
     private fun followPage(dx: Float) {
         if (!animateHomePages) return

@@ -225,6 +225,65 @@ class LauncherScreenTest {
         }
     }
 
+    @Test fun pageSwipeCanStartInTheGapBetweenMovingPages() {
+        assumeTrue("Requires an isolated emulator with an editable home layout",
+            InstrumentationRegistry.getArguments().getString("pageFixture") == "true")
+        assumeTrue(android.animation.ValueAnimator.areAnimatorsEnabled())
+        Workspace(instrumentation.targetContext).use { workspace ->
+            val initial = workspace.read()
+            assumeTrue(workspace.hiddenPages().isEmpty() && initial.pages == 1)
+            val marker = Tile(java.util.UUID.randomUUID().toString(), TileKind.DATE, Slot(1, 0))
+            assertTrue(workspace.save(initial.revision, initial.tiles + marker))
+            var activity: Activity? = null
+            try {
+                val home = open(HomeActivity::class.java).also { activity = it }
+                val (x, y) = whitespaceBelowGrid(home)
+                val width = home.resources.displayMetrics.widthPixels
+                fun dispatch(down: Long, action: Int, at: Float) {
+                    val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, at, y, 0)
+                    event.source = InputDevice.SOURCE_TOUCHSCREEN
+                    try { home.dispatchTouchEvent(event) } finally { event.recycle() }
+                }
+                fun viewports() = descendants(home.window.decorView).filterIsInstance<ScrollView>()
+                    .filter { it.isShown && it.width > 0 }.toList()
+                val initialDown = SystemClock.uptimeMillis()
+                val left = x - width * .34f
+                onMain {
+                    dispatch(initialDown, MotionEvent.ACTION_DOWN, x)
+                    dispatch(initialDown, MotionEvent.ACTION_MOVE, left)
+                }
+                waitFor(home) { viewports().size == 2 }
+                onMain {
+                    dispatch(initialDown, MotionEvent.ACTION_UP, left)
+                    // Read the two page bounds before the next animation frame can move them.
+                    val bounds = viewports().map {
+                        val start = IntArray(2).also(it::getLocationOnScreen)[0]
+                        start to start + it.width
+                    }.sortedBy { it.first }
+                    assertEquals(2, bounds.size)
+                    val gapLeft = bounds[0].second
+                    val gapRight = bounds[1].first
+                    assertTrue("The moving pages must have a gap to press", gapLeft < gapRight)
+                    val seam = (gapLeft + gapRight) / 2f
+                    assertTrue(seam in width * .2f..width * .75f)
+                    val down = SystemClock.uptimeMillis()
+                    dispatch(down, MotionEvent.ACTION_DOWN, seam)
+                    dispatch(down, MotionEvent.ACTION_MOVE, seam + width * .20f)
+                    dispatch(down, MotionEvent.ACTION_UP, seam + width * .20f)
+                    assertTrue("A right swipe started between the pages must return to page 1",
+                        descendants(home.window.decorView).any { it.contentDescription == "Page 1 of 2. Next page" })
+                }
+                assertEquals(initial.tiles + marker, workspace.read().tiles)
+            } finally {
+                activity?.let { home -> onMain { home.finish() } }
+                val current = workspace.read()
+                if (current.tiles.any { it.id == marker.id }) {
+                    assertTrue(workspace.save(current.revision, current.tiles.filterNot { it.id == marker.id }))
+                }
+            }
+        }
+    }
+
     private fun pageDrag(reduceMotion: Boolean) {
         assumeTrue("Requires an isolated emulator with an editable home layout",
             InstrumentationRegistry.getArguments().getString("pageFixture") == "true")
