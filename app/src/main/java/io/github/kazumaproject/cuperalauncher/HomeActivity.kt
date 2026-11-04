@@ -135,6 +135,7 @@ class HomeActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var gesture: HomeGesture
     private val reduced get() = !ValueAnimator.areAnimatorsEnabled() || store.setting("motion") == "reduced"
+    private val animateHomePages get() = ValueAnimator.areAnimatorsEnabled() && (!editing || !reduced)
 
     private val profiles = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -708,11 +709,12 @@ class HomeActivity : Activity() {
             previewView?.tiles?.viewportContains(x, y) == true
 
     private fun followPage(dx: Float) {
-        if (reduced) return
+        if (!animateHomePages) return
         val direction = if (dx < 0) 1 else -1
         showPagePreview(pageInDirection(direction), direction)
         val width = content.width.toFloat()
-        workspace.translationX = dx.coerceIn(-width, width) * if (previewView == null) .24f else 1f
+        val travel = dx.coerceIn(-width, width)
+        workspace.translationX = if (previewView != null) travel else if (reduced) 0f else travel * .24f
     }
 
     private fun showPagePreview(adjacent: Int, direction: Int) {
@@ -737,7 +739,7 @@ class HomeActivity : Activity() {
         return workspace.translationX / if (previewView == null) .24f else 1f
     }
 
-    private fun settlePage(duration: Long = if (reduced) 0L else 160L) {
+    private fun settlePage(duration: Long = if (animateHomePages) 160L else 0L) {
         val settling = workspace
         settling.animate().translationX(0f).setDuration(duration).withEndAction {
             if (workspace === settling) {
@@ -1440,7 +1442,7 @@ class HomeActivity : Activity() {
         val preview = previewView?.takeIf { previewPage == index }
         val offset = if (preview != null) workspace.translationX + direction * content.width
             else content.width * .26f * direction
-        val duration = if (!reduced && !gesture.active) 320L else 0L
+        val duration = if (animateHomePages && !gesture.active) 320L else 0L
         page = index
         folder = null
         val outgoing = grid?.parent as? PageViewport

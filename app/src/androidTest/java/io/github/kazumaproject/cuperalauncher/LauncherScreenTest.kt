@@ -100,31 +100,44 @@ class LauncherScreenTest {
         } finally { onMain { home.finish() } }
     }
 
-    @Test fun reversingAPageDragKeepsItsPageAndTheNextSwipeStillWorks() {
+    @Test fun reversingAPageDragKeepsItsPageAndTheNextSwipeStillWorks() = pageDrag(reduceMotion = false)
+
+    @Test fun reducedMotionKeepsHomePagesFollowingTheFinger() = pageDrag(reduceMotion = true)
+
+    private fun pageDrag(reduceMotion: Boolean) {
         assumeTrue("Requires an isolated emulator with an editable home layout",
             InstrumentationRegistry.getArguments().getString("pageFixture") == "true")
+        if (reduceMotion) assumeTrue(android.animation.ValueAnimator.areAnimatorsEnabled())
         Workspace(instrumentation.targetContext).use { workspace ->
             val initial = workspace.read()
             assumeTrue(workspace.hiddenPages().isEmpty() && initial.pages == 1)
+            val previousMotion = workspace.setting("motion", "system")
             val marker = Tile(java.util.UUID.randomUUID().toString(), TileKind.DATE, Slot(1, 0))
             assertTrue(workspace.save(initial.revision, initial.tiles + marker))
             var activity: Activity? = null
             try {
+                if (reduceMotion) workspace.put("motion", "reduced")
                 val home = open(HomeActivity::class.java).also { activity = it }
                 val (x, y) = whitespaceBelowGrid(home)
                 val travel = home.resources.displayMetrics.widthPixels * .34f
-                fun swipe(vararg offsets: Float) {
+                fun swipe(vararg offsets: Float, verifyPreview: Boolean = false) {
                     val automation = instrumentation.uiAutomation
                     val down = SystemClock.uptimeMillis()
+                    var movedBeforeRelease = false
                     touch(down, MotionEvent.ACTION_DOWN, x, y, automation)
                     val start = SystemClock.uptimeMillis()
                     offsets.forEachIndexed { index, offset ->
                         SystemClock.sleep(maxOf(0L, start + (index + 1) * 30L - SystemClock.uptimeMillis()))
                         touch(down, MotionEvent.ACTION_MOVE, x + offset, y, automation)
+                        if (verifyPreview && index == 0) onMain {
+                            movedBeforeRelease = descendants(home.window.decorView)
+                                .any { it.translationX in -travel..(-travel / 4f) }
+                        }
                     }
                     touch(down, MotionEvent.ACTION_UP, x + offsets.last(), y, automation)
+                    if (verifyPreview) assertTrue("The home page must move before release", movedBeforeRelease)
                 }
-                swipe(-travel / 2, -travel, -travel / 2, 0f)
+                swipe(-travel / 2, -travel, -travel / 2, 0f, verifyPreview = reduceMotion)
                 waitFor(home) { views -> views.any { it.contentDescription == "Page 1 of 2. Next page" } }
                 swipe(-travel / 2, -travel)
                 waitFor(home) { views -> views.any { it.contentDescription == "Page 2 of 2. Next page" } }
@@ -133,6 +146,7 @@ class LauncherScreenTest {
                 assertEquals(initial.tiles + marker, workspace.read().tiles)
             } finally {
                 activity?.let { home -> onMain { home.finish() } }
+                if (reduceMotion) workspace.put("motion", previousMotion)
                 val current = workspace.read()
                 if (current.tiles.any { it.id == marker.id }) {
                     assertTrue(workspace.save(current.revision, current.tiles.filterNot { it.id == marker.id }))
