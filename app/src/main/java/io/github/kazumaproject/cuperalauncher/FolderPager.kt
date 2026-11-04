@@ -143,7 +143,7 @@ internal class FolderPager(
         val target = next * pageStride
         settle?.cancel()
         settle = null
-        if (reducedMotion() || target == scrollX) {
+        if (!ValueAnimator.areAnimatorsEnabled() || (edgeTurn && reducedMotion()) || target == scrollX) {
             scrollTo(target, 0)
             return
         }

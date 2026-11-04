@@ -40,7 +40,9 @@ fun Context.dark(store: Workspace) = when (store.setting("appearance", "system")
     else -> resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 }
 
-fun Activity.systemBars(root: View, dark: Boolean, keepStatusInset: Boolean = false) {
+fun Activity.systemBars(
+    root: View, dark: Boolean, keepStatusInset: Boolean = false, padForIme: Boolean = true
+) {
     window.setDecorFitsSystemWindows(false)
     window.isNavigationBarContrastEnforced = false
     window.insetsController?.setSystemBarsAppearance(
@@ -51,8 +53,8 @@ fun Activity.systemBars(root: View, dark: Boolean, keepStatusInset: Boolean = fa
         val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
         val top = if (keepStatusInset) maxOf(bars.top, insets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars()).top)
             else bars.top
-        val ime = insets.getInsets(WindowInsets.Type.ime()).bottom
-        view.setPadding(bars.left, top, bars.right, maxOf(bars.bottom, ime))
+        val bottom = if (padForIme) maxOf(bars.bottom, insets.getInsets(WindowInsets.Type.ime()).bottom) else bars.bottom
+        view.setPadding(bars.left, top, bars.right, bottom)
         insets
     }
 }

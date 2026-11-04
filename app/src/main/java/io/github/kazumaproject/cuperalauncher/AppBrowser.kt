@@ -8,6 +8,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -125,6 +126,13 @@ class AppBrowser(
                 addView(View(host).apply { setBackgroundColor(0x6a101725) }, android.widget.FrameLayout.LayoutParams(-1, -1))
             }
             addView(root, android.widget.FrameLayout.LayoutParams(-1, -1))
+            // Resize the browser controls without moving the blurred home underneath.
+            setOnApplyWindowInsetsListener { _, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                val bottom = (insets.getInsets(WindowInsets.Type.ime()).bottom - bars.bottom).coerceAtLeast(0)
+                if (root.paddingBottom != bottom) root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, bottom)
+                insets
+            }
         }
     }
 

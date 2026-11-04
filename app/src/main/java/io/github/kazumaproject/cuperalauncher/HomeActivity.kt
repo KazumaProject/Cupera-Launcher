@@ -236,7 +236,8 @@ class HomeActivity : Activity() {
         val before = darkMode
         darkMode = dark(store)
         if (before != darkMode && browser != null) render()
-        systemBars(root, darkMode && (search || library) || !search && !library, keepStatusInset = true)
+        systemBars(root, darkMode && (search || library) || !search && !library,
+            keepStatusInset = true, padForIme = false)
         layout = store.read()
         hiddenPages = store.hiddenPages()
         refreshApps()
@@ -1028,7 +1029,7 @@ class HomeActivity : Activity() {
         backdrop.background = null
         backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
         backdrop.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
-        systemBars(root, true, keepStatusInset = true)
+        systemBars(root, true, keepStatusInset = true, padForIme = false)
         homeFooter?.let(::fillFooter)
     }
 
@@ -1185,7 +1186,9 @@ class HomeActivity : Activity() {
         presentation.overlay.setBackgroundColor((opacity shl 24) or 0x00091a34)
     }
 
-    private fun animateFolderBackdrop(presentation: FolderPresentation, opening: Boolean, duration: Long) {
+    private fun animateFolderBackdrop(
+        presentation: FolderPresentation, opening: Boolean, duration: Long, linearFade: Boolean = false
+    ) {
         presentation.backdropAnimator?.cancel()
         val initial = presentation.blurLevel
         presentation.backdropAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -1193,7 +1196,10 @@ class HomeActivity : Activity() {
             interpolator = LinearInterpolator()
             addUpdateListener {
                 val progress = it.animatedFraction
-                val level = if (opening) {
+                val level = if (linearFade) {
+                    val target = if (opening) folderBlurEffects.lastIndex else 0
+                    initial + (target - initial) * progress
+                } else if (opening) {
                     val remaining = 1f - (progress / .45f).coerceAtMost(1f)
                     folderBlurEffects.lastIndex * (1f - remaining * remaining)
                 } else {
@@ -1207,7 +1213,7 @@ class HomeActivity : Activity() {
 
     private fun closeFolder() {
         val presentation = folderPresentation ?: return
-        val animate = folder != null && !reduced
+        val animate = folder != null && ValueAnimator.areAnimatorsEnabled()
         folder = null
         folderAnchor = null
         if (!animate) {
@@ -1216,6 +1222,14 @@ class HomeActivity : Activity() {
         }
         val card = presentation.card
         val title = presentation.title
+        if (reduced) {
+            val duration = (300 * card.alpha).roundToInt().coerceAtLeast(1).toLong()
+            card.animate().cancel()
+            animateFolderBackdrop(presentation, opening = false, duration = duration, linearFade = true)
+            card.animate().alpha(0f).setInterpolator(LinearInterpolator()).setDuration(duration)
+                .withEndAction { dismissFolder(presentation) }.start()
+            return
+        }
         val duration = 205L
         title.animate().cancel()
         title.animate().alpha(0f).setStartDelay(0).setDuration(135).start()
@@ -1243,10 +1257,17 @@ class HomeActivity : Activity() {
     }
 
     private fun revealFolder() {
-        if (reduced) return
+        if (!ValueAnimator.areAnimatorsEnabled()) return
         val presentation = folderPresentation ?: return
         val card = presentation.card
         val duration = 335L
+        if (reduced) {
+            card.alpha = 0f
+            setFolderBackdrop(presentation, 0)
+            animateFolderBackdrop(presentation, opening = true, duration = duration, linearFade = true)
+            card.animate().alpha(1f).setInterpolator(LinearInterpolator()).setDuration(duration).start()
+            return
+        }
         card.translationX = presentation.collapsedX
         card.translationY = presentation.collapsedY
         card.scaleX = presentation.collapsedScale

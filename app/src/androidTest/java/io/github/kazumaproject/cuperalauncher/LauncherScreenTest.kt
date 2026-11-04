@@ -221,6 +221,45 @@ class LauncherScreenTest {
         } finally { onMain { home.finish() } }
     }
 
+    @Test fun searchKeyboardKeepsTheHomeBackdropInPlace() {
+        assumeTrue("Requires an enabled software keyboard",
+            InstrumentationRegistry.getArguments().getString("imeFixture") == "true")
+        val home = open(HomeActivity::class.java)
+        try {
+            fun Sequence<View>.searchButton() = filterIsInstance<TextView>().first { it.text == "⌕  Search" }
+            waitFor(home) { views -> home.hasWindowFocus() && views.any { it is TextView && it.text == "⌕  Search" } }
+            lateinit var backdrop: View
+            var height = 0
+            onMain {
+                val button = descendants(home.window.decorView).searchButton()
+                backdrop = (button.parent as View).parent as View
+                height = backdrop.height
+                assertTrue(button.performClick())
+            }
+            val imeType = android.view.WindowInsets.Type.ime()
+            waitFor(home) { views ->
+                val decor = home.window.decorView
+                val insets = decor.rootWindowInsets
+                val input = views.filterIsInstance<EditText>().firstOrNull { it.hint == "Search apps" }
+                if (insets?.isVisible(imeType) != true || input == null || input.height == 0) false else {
+                    val position = IntArray(2).also(input::getLocationOnScreen)
+                    position[1] + input.height <= decor.height - insets.getInsets(imeType).bottom
+                }
+            }
+            onMain {
+                assertTrue(backdrop.isAttachedToWindow)
+                assertEquals(height, backdrop.height)
+                home.onBackPressed()
+            }
+            waitFor(home) { views -> views.none { it is EditText && it.hint == "Search apps" } }
+            onMain {
+                val button = descendants(home.window.decorView).searchButton()
+                assertTrue(backdrop === (button.parent as View).parent)
+                assertEquals(height, backdrop.height)
+            }
+        } finally { onMain { home.finish() } }
+    }
+
     @Test fun iconRequestsAfterTheLoaderClosesAreIgnored() {
         val context = instrumentation.targetContext
         val entry = Apps(context).entries().first { it.info.componentName.packageName == context.packageName }
@@ -341,26 +380,38 @@ class LauncherScreenTest {
     }
 
     @Suppress("DEPRECATION")
-    @Test fun backDuringFolderOpeningReturnsWithoutEditingPlacement() {
+    @Test fun backDuringFolderOpeningReturnsWithoutEditingPlacement() = backDuringFolderOpening(reduceMotion = false)
+
+    @Test fun reducedMotionFadesFolderAndBackPreservesPlacement() = backDuringFolderOpening(reduceMotion = true)
+
+    private fun backDuringFolderOpening(reduceMotion: Boolean) {
         assumeTrue("Requires an isolated Home workspace",
             InstrumentationRegistry.getArguments().getString("folderFixture") == "true")
+        assumeTrue("Requires platform animations", android.animation.ValueAnimator.areAnimatorsEnabled())
         Workspace(instrumentation.targetContext).use { store ->
             val initial = store.read()
             val (source, target) = initial.tiles.filter { it.isApp && it.slot.page == 0 && it.slot.folder.isEmpty() }.take(2)
             val placed = requireNotNull(initial.move(source.id, target.slot, createFolder = true))
             assertTrue(store.save(initial.revision, placed))
             val saved = store.read()
+            val originalMotion = store.setting("motion", "system")
             var activity: Activity? = null
             try {
+                store.put("motion", if (reduceMotion) "reduced" else "system")
                 val home = open(HomeActivity::class.java).also { activity = it }
                 waitFor(home) { views -> views.any { it.contentDescription == "Folder" && it.width > 0 } }
                 onMain {
                     val views = descendants(home.window.decorView)
                     assertTrue(views.first { it.contentDescription == "Folder" }.performClick())
                     val title = views.first { it.contentDescription == "Folder. Rename folder" }
-                    val systemAnimations = android.animation.ValueAnimator.areAnimatorsEnabled()
-                    assertTrue("Back must be sent before the folder is fully open (system animations: $systemAnimations)",
-                        (title.parent as View).scaleX < 1f)
+                    val card = title.parent as View
+                    if (reduceMotion) {
+                        assertEquals(1f, card.scaleX, 0f)
+                        assertEquals(0f, card.translationX, 0f)
+                        assertTrue(card.alpha < 1f)
+                    } else {
+                        assertTrue("Back must be sent before the folder is fully open", card.scaleX < 1f)
+                    }
                     home.onBackPressed()
                 }
                 waitFor(home) { views ->
@@ -370,6 +421,7 @@ class LauncherScreenTest {
                 assertEquals(saved, store.read())
             } finally {
                 activity?.let { home -> onMain { home.finish() } }
+                store.put("motion", originalMotion)
                 if (store.read().revision == saved.revision) assertTrue(store.save(saved.revision, initial.tiles))
             }
         }
