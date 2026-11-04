@@ -366,6 +366,7 @@ class HomeActivity : Activity() {
     }
 
     private fun publishApps(snapshot: List<Apps.Entry>) {
+        val firstCatalog = entries.isEmpty() && snapshot.isNotEmpty()
         val catalogChanged = entries.size != snapshot.size || entries.indices.any { index ->
             val previous = entries[index]
             val next = snapshot[index]
@@ -395,6 +396,9 @@ class HomeActivity : Activity() {
         if ((search || library) && current != null) {
             if (catalogChanged || packagesChanged) renderedHome = null
             current.updateEntries(entries)
+        } else if (firstCatalog && !packagesChanged && renderedHome == homeDisplay()) {
+            // An initial catalog can arrive while a folder or page is moving.
+            refreshTileCatalog(content)
         } else if (catalogChanged || packagesChanged || renderedHome != homeDisplay()) {
             if (gesture.active) gesture.cancel()
             render()
@@ -831,6 +835,15 @@ class HomeActivity : Activity() {
         setOnClickListener { action() }
     }
 
+    private class CatalogBinding(val refresh: () -> Unit)
+
+    private fun refreshTileCatalog(view: View) {
+        (view.tag as? CatalogBinding)?.refresh?.invoke()
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) refreshTileCatalog(view.getChildAt(index))
+        }
+    }
+
     private fun tileView(tile: Tile, cellWidth: Int, cellHeight: Int): View {
         if (tile.isWidget) {
             val view = widgets.view(tile, cellWidth * tile.width - dp(8), cellHeight * tile.height - dp(8)) {
@@ -875,22 +888,31 @@ class HomeActivity : Activity() {
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }, FrameLayout.LayoutParams(dp(22), dp(19), Gravity.TOP or Gravity.END))
         }
-        if (editing && tile.kind != TileKind.FOLDER) {
-            iconOverlay.addView(label("−", 15f, ink, true).apply {
+        val remove = if (editing && tile.kind != TileKind.FOLDER) {
+            label("−", 15f, ink, true).apply {
                 gravity = Gravity.CENTER
                 background = rounded(0xffe1eaf5.toInt(), dp(13).toFloat())
                 contentDescription = "Remove $name from Home"
                 setOnClickListener { removeTile(tile) }
-            }, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP or Gravity.START))
-        }
+            }.also { iconOverlay.addView(it, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP or Gravity.START)) }
+        } else null
         frame.addView(iconOverlay, LinearLayout.LayoutParams(size, size))
-        if (showLabel) frame.addView(label(name, 12f, Color.WHITE).apply {
+        val caption = if (showLabel) label(name, 12f, Color.WHITE).apply {
             gravity = Gravity.CENTER
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             setShadowLayer(4f, 0f, 2f, 0xb0000000.toInt())
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
-        frame.contentDescription = if (count == 0) name else "$name, $count notifications"
+        }.also { frame.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) }) } else null
+        fun describe(name: String) {
+            frame.contentDescription = if (count == 0) name else "$name, $count notifications"
+        }
+        describe(name)
+        if (tile.key != null && entries.isEmpty()) frame.tag = CatalogBinding {
+            val title = title(tile)
+            describe(title)
+            caption?.text = title
+            remove?.contentDescription = "Remove $title from Home"
+        }
         frame.setOnClickListener {
             when {
                 editing && tile.kind != TileKind.FOLDER -> tileMenu(frame, tile)
@@ -917,19 +939,24 @@ class HomeActivity : Activity() {
     }
 
     private fun appIcon(tile: Tile) = ImageView(this).apply {
+        bindAppIcon(this, tile)
+        if (entries.isEmpty()) tag = CatalogBinding { bindAppIcon(this, tile) }
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    private fun bindAppIcon(view: ImageView, tile: Tile) {
         val entry = entries.firstOrNull { it.key.component == tile.key?.component && it.key.profile == tile.key.profile }
         val shortcut = entry?.takeIf { tile.kind == TileKind.SHORTCUT }?.let { app ->
             apps.shortcuts(app).firstOrNull { it.id == tile.key?.shortcut }
         }
-        setImageDrawable(getDrawable(R.drawable.ic_cupera))
+        view.setImageDrawable(getDrawable(R.drawable.ic_cupera))
         if (shortcut != null) {
             val drawable = runCatching {
                 apps.launcher.getShortcutBadgedIconDrawable(shortcut, resources.displayMetrics.densityDpi)
             }.getOrNull()
-            if (drawable != null) setImageDrawable(drawable)
-        } else if (entry != null) icons.show(this, entry, entry.key.profile == apps.personalSerial)
-        scaleType = ImageView.ScaleType.FIT_CENTER
-        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            if (drawable != null) view.setImageDrawable(drawable)
+        } else if (entry != null) icons.show(view, entry, entry.key.profile == apps.personalSerial)
     }
 
     private fun title(tile: Tile): String = when (tile.kind) {
