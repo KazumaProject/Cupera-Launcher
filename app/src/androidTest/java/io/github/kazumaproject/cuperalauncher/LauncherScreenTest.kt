@@ -470,16 +470,27 @@ class LauncherScreenTest {
                 val automation = instrumentation.uiAutomation
                 val animates = android.animation.ValueAnimator.areAnimatorsEnabled() && store.setting("motion") != "reduced"
                 val interrupted = SystemClock.uptimeMillis()
+                val turning = CountDownLatch(1)
+                val observeTurn = object : android.view.Choreographer.FrameCallback {
+                    override fun doFrame(time: Long) {
+                        val pager = descendants(home.window.decorView).filterIsInstance<FolderPager>().firstOrNull()
+                        val moving = pager?.let {
+                            val stride = (it.getChildAt(0).width - it.width) / 2
+                            if (animates) it.scrollX in 1 until stride else it.scrollX == stride && stride > 0
+                        } ?: false
+                        if (moving) turning.countDown()
+                        else android.view.Choreographer.getInstance().postFrameCallback(this)
+                    }
+                }
                 touch(interrupted, MotionEvent.ACTION_DOWN, sourceX, sourceY, automation)
                 try {
+                    onMain { android.view.Choreographer.getInstance().postFrameCallback(observeTurn) }
                     SystemClock.sleep(32)
                     touch(interrupted, MotionEvent.ACTION_MOVE, destination[0], destination[2], automation)
-                    waitFor(home) { views -> views.filterIsInstance<FolderPager>().any { pager ->
-                        val stride = (pager.getChildAt(0).width - pager.width) / 2
-                        if (animates) pager.scrollX in 1 until stride else pager.scrollX == stride
-                    } }
+                    assertTrue("Folder edge turn did not start", turning.await(5, TimeUnit.SECONDS))
                 } finally {
                     touch(interrupted, MotionEvent.ACTION_CANCEL, destination[0], destination[2], automation)
+                    onMain { android.view.Choreographer.getInstance().removeFrameCallback(observeTurn) }
                 }
                 SystemClock.sleep(800)
                 expectPage(2, "Folder app 10", "Folder app 1", count = 3)
