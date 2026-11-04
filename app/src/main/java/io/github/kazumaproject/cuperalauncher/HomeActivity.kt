@@ -19,8 +19,10 @@ import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.os.UserHandle
 import android.os.UserManager
+import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
@@ -114,6 +116,7 @@ class HomeActivity : Activity() {
         }
     }
     private class HomeReturn(val backdrop: View, val fade: Boolean) {
+        val duration = if (fade) 80L else 120L
         var start: Runnable? = null
         var animator: ValueAnimator? = null
     }
@@ -243,7 +246,8 @@ class HomeActivity : Activity() {
             finishHomeReturn()
             return
         }
-        val start = Runnable { settleHomeReturn(presentation) }
+        val startedAt = SystemClock.uptimeMillis()
+        val start = Runnable { settleHomeReturn(presentation, startedAt) }
         presentation.start = start
         if (root.isHardwareAccelerated) {
             root.viewTreeObserver.registerFrameCommitCallback { handler.post(start) }
@@ -251,7 +255,8 @@ class HomeActivity : Activity() {
             // Software-rendered windows do not produce a frame commit callback.
             root.postOnAnimation(start)
         }
-        handler.postDelayed(start, RETURN_FRAME_WAIT_MS)
+        val scaledDuration = (presentation.duration * homeReturnDurationScale()).toLong()
+        handler.postAtTime(start, startedAt + minOf(RETURN_FRAME_WAIT_MS, scaledDuration))
     }
 
     override fun onResume() {
@@ -295,21 +300,30 @@ class HomeActivity : Activity() {
     private fun canSettleHomeReturn(presentation: HomeReturn): Boolean =
         ValueAnimator.areAnimatorsEnabled() && reduced == presentation.fade && apps.hasHome()
 
-    private fun settleHomeReturn(presentation: HomeReturn) {
+    private fun homeReturnDurationScale(): Float =
+        if (android.os.Build.VERSION.SDK_INT >= 33) ValueAnimator.getDurationScale()
+        else Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+
+    private fun settleHomeReturn(presentation: HomeReturn, startedAt: Long) {
         if (homeReturn !== presentation || presentation.animator != null) return
         clearHomeReturnStart(presentation)
         if (!canSettleHomeReturn(presentation)) {
             finishHomeReturn()
             return
         }
+        // Waiting for a frame uses part of the effect's time. Don't replay it after a stall.
+        val scale = homeReturnDurationScale()
+        val elapsed = SystemClock.uptimeMillis() - startedAt
+        if (scale <= 0f || elapsed >= presentation.duration * scale) {
+            finishHomeReturn()
+            return
+        }
         presentation.animator = (if (presentation.fade) {
             ValueAnimator.ofFloat(RETURN_FADE_START, 1f).apply {
-                duration = 80
                 addUpdateListener { presentation.backdrop.alpha = it.animatedValue as Float }
             }
         } else {
             ValueAnimator.ofInt(returnBlurEffects.lastIndex, 0).apply {
-                duration = 120
                 var lastStep = returnBlurEffects.lastIndex
                 addUpdateListener {
                     val step = it.animatedValue as Int
@@ -320,6 +334,8 @@ class HomeActivity : Activity() {
                 }
             }
         }).apply {
+            duration = presentation.duration
+            currentPlayTime = (elapsed / scale).toLong()
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     presentation.animator = null
