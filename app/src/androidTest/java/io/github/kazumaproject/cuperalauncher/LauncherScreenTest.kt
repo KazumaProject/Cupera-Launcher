@@ -214,7 +214,7 @@ class LauncherScreenTest {
                 assertTrue(search.performClick())
             }
             waitFor(home) { views -> views.any { it is EditText && it.hint == "Search apps" } }
-            onMain { descendants(home.window.decorView).filterIsInstance<EditText>().first().setText("cupera") }
+            onMain { descendants(home.window.decorView).filterIsInstance<EditText>().first().setText("CÚPÉRA   LAÚNCHER") }
             waitFor(home) {
                 accessibleDescendants(home.window.decorView).any { it is TextView && it.text == "Cupera Launcher" }
             }

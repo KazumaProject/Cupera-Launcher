@@ -33,6 +33,10 @@ class AppBrowser(
     private val onPrivate: (Boolean) -> Unit,
     private val onLaunch: (AppKey, View, UserHandle?) -> Unit
 ) {
+    private companion object {
+        val COMBINING_MARKS = Regex("\\p{M}+")
+    }
+
     private val foreground = Color.WHITE
     private val secondary = 0xffd4e0ef.toInt()
     private val surface get() = if (dark || isSearch) 0xe5253247.toInt() else 0x66e9f5ff
@@ -150,7 +154,10 @@ class AppBrowser(
     private fun drawResults() {
         results.removeAllViews()
         privateContent = null
-        val filtered = indexed.filter { (_, key) -> query.isEmpty() || query.split(' ').all(key::contains) }.map { it.first }
+        val words = query.split(' ')
+        val filtered = indexed.mapNotNull { (entry, key) ->
+            entry.takeIf { query.isEmpty() || words.all(key::contains) }
+        }
         val grouped = !isSearch && query.isEmpty() && store.settingEnabled("library_groups")
         if (grouped) {
             val groups = filtered.groupBy(::category).toSortedMap()
@@ -321,5 +328,5 @@ class AppBrowser(
     }
 
     private fun normalized(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKD)
-        .replace(Regex("\\p{M}+"), "").lowercase(Locale.ROOT).trim()
+        .replace(COMBINING_MARKS, "").lowercase(Locale.ROOT).trim()
 }

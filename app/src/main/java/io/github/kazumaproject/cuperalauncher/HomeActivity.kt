@@ -395,8 +395,16 @@ class HomeActivity : Activity() {
         val current = browser
         // An unchanged resume can finish after a new gesture starts. Keep its views attached.
         if ((search || library) && current != null) {
-            if (catalogChanged || packagesChanged) renderedHome = null
-            current.updateEntries(entries)
+            if (catalogChanged || packagesChanged) {
+                if (search && firstCatalog && !packagesChanged && renderedHome == homeDisplay()) {
+                    homeLayer?.let(::refreshTileCatalog)
+                } else {
+                    renderedHome = null
+                }
+                current.updateEntries(entries)
+            } else if (library) {
+                current.updateEntries(entries)
+            }
         } else if (firstCatalog && !packagesChanged && renderedHome == homeDisplay()) {
             // An initial catalog can arrive while a folder or page is moving.
             refreshTileCatalog(content)
