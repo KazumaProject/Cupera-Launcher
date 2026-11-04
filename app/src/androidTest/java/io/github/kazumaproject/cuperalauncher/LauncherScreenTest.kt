@@ -490,10 +490,32 @@ class LauncherScreenTest {
                 assertEquals(Slot(0, 26, folder.id), moved.tiles.single { it.id == apps.first().id }.slot)
                 assertEquals(installed.tiles.filterNot { it.id == apps.first().id }.toSet(),
                     moved.tiles.filterNot { it.id == apps.first().id }.toSet())
+
+                onMain {
+                    val item = descendants(home.window.decorView).first { it.contentDescription == "Folder app 1" }
+                    assertTrue(item.performClick())
+                }
+                fun choose(label: String) {
+                    val deadline = SystemClock.uptimeMillis() + 5_000
+                    while (SystemClock.uptimeMillis() < deadline) {
+                        val node = automation.rootInActiveWindow?.findAccessibilityNodeInfosByText(label)
+                            ?.firstOrNull { it.text?.toString() == label }
+                        val action = generateSequence(node) { it.parent }.firstOrNull { it.isClickable }
+                        if (action?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK) == true) return
+                        SystemClock.sleep(80)
+                    }
+                    throw AssertionError("Move option unavailable: $label")
+                }
+                choose("Move…")
+                choose("Paged folder, page 1, row 1, column 1")
+                expectPage(1, "Folder app 1", "Folder app 10", count = 3)
+                val movedByMenu = store.read()
+                assertEquals(installed.revision + 2, movedByMenu.revision)
+                assertEquals(installed.tiles.toSet(), movedByMenu.tiles.toSet())
             } finally {
                 activity?.let { home -> onMain { home.finish() } }
                 val current = store.read()
-                if (current.revision in installed.revision..installed.revision + 1 && current.tiles.any { it.id == folder.id })
+                if (current.revision in installed.revision..installed.revision + 2 && current.tiles.any { it.id == folder.id })
                     assertTrue(store.save(current.revision, initial.tiles))
             }
         }

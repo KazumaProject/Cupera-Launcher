@@ -46,6 +46,8 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+private const val FOLDER_PAGE_SIZE = 9
+
 class HomeActivity : Activity() {
     private lateinit var store: Workspace
     private lateinit var apps: Apps
@@ -1099,14 +1101,12 @@ class HomeActivity : Activity() {
         val height = min((width * 1.13f).toInt(), content.height * 3 / 4)
         val inset = dp(14)
         val children = layout.tiles.filter { it.slot.folder == id }
-        val pageSize = 9
-        val occupiedPages = (children.maxOfOrNull { it.slot.cell } ?: 0) / pageSize + 1
-        val pageCount = if (editing) min(occupiedPages + 1, Slot(0, 0, id).capacity / pageSize) else occupiedPages
+        val pageCount = folderPageCount(id, children, includeEmptyPage = editing)
         val pageWidth = width - inset * 2
         val dotsHeight = if (pageCount > 1) dp(22) else 0
         val gridHeight = 3 * maxOf(dp(64), (height - inset * 2 - dotsHeight) / 3)
         val grids = List(pageCount) { index ->
-            TileGrid(this, 0, id, pageWidth, gridHeight, 3, 3, ::tileView, firstCell = index * pageSize).apply {
+            TileGrid(this, 0, id, pageWidth, gridHeight, 3, 3, ::tileView, firstCell = index * FOLDER_PAGE_SIZE).apply {
                 // Empty rows still have to receive drops.
                 minimumHeight = gridHeight
                 populate(children)
@@ -1313,8 +1313,27 @@ class HomeActivity : Activity() {
         }
     }
 
+    private fun folderPageCount(id: String, children: List<Tile>, includeEmptyPage: Boolean): Int {
+        val occupiedPages = (children.maxOfOrNull { it.slot.cell } ?: 0) / FOLDER_PAGE_SIZE + 1
+        return if (includeEmptyPage) min(occupiedPages + 1, Slot(0, 0, id).capacity / FOLDER_PAGE_SIZE) else occupiedPages
+    }
+
     private fun movePicker(tile: Tile) {
         val destinations = mutableListOf<Pair<String, Slot>>()
+        val sourceFolder = layout.tiles.firstOrNull { it.id == tile.slot.folder && it.kind == TileKind.FOLDER }
+        if (sourceFolder != null) {
+            val children = layout.tiles.filter { it.slot.folder == sourceFolder.id }
+            val pages = folderPageCount(sourceFolder.id, children, includeEmptyPage = true)
+            for (cell in 0 until pages * FOLDER_PAGE_SIZE) {
+                val slot = Slot(0, cell, sourceFolder.id)
+                if (layout.move(tile.id, slot) != null) {
+                    val position = cell % FOLDER_PAGE_SIZE
+                    val label = "${sourceFolder.name}, page ${cell / FOLDER_PAGE_SIZE + 1}, " +
+                        "row ${position / 3 + 1}, column ${position % 3 + 1}"
+                    destinations += label to slot
+                }
+            }
+        }
         for (p in 0..min(layout.pages, Layout.MAX_PAGES - 1)) {
             for (cell in 0 until 24) {
                 val s = Slot(p, cell)
@@ -1328,7 +1347,7 @@ class HomeActivity : Activity() {
             }
         }
         if (tile.isApp) {
-            layout.tiles.filter { it.kind == TileKind.FOLDER }.forEach { item ->
+            layout.tiles.filter { it.kind == TileKind.FOLDER && it.id != sourceFolder?.id }.forEach { item ->
                 val cell = (0 until 54).firstOrNull { layout.at(Slot(0, it, item.id)) == null }
                 if (cell != null) destinations += "${item.name}, position ${cell + 1}" to Slot(0, cell, item.id)
             }
@@ -1339,6 +1358,7 @@ class HomeActivity : Activity() {
                 val destination = destinations[i].second
                 layout.move(tile.id, destination)?.let { tiles ->
                     if (destination.folder.isEmpty() && destination.page >= 0) page = destination.page
+                    if (destination.folder == folder) folderPage = destination.cell / FOLDER_PAGE_SIZE
                     commit(tiles)
                 }
             }.setNegativeButton("Cancel", null).show()
