@@ -94,6 +94,17 @@ class HomeActivity : Activity() {
     private var searchAnimator: ValueAnimator? = null
     private var searchProgress = 0f
     private var searchClosing = false
+    private class LibraryMotion(val panel: AppBrowser, val view: View, val home: FrameLayout) {
+        var progress = 0f
+        var animator: ValueAnimator? = null
+        var returnStartX = 0f
+        var returnStartY = 0f
+        var returnProgress = 1f
+        var trackingReturn = false
+        var draggingReturn = false
+    }
+    private var libraryMotion: LibraryMotion? = null
+    private val libraryTouchSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
     private val searchBlurEffects by lazy {
         List(9) { step ->
             val radius = dp(24) * step / 8f
@@ -111,7 +122,8 @@ class HomeActivity : Activity() {
             if (step == 0) null else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
         }
     }
-    private var entries = emptyList<Apps.Entry>()
+    private var catalog = AppBrowser.Catalog(emptyList())
+    private val entries get() = catalog.entries
     internal val icons = AppIcons()
     private val appWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var appGeneration = 0
@@ -251,6 +263,7 @@ class HomeActivity : Activity() {
         finishHomeReturn()
         gesture.cancel()
         invalidatePrivate()
+        libraryMotion?.let { finishLibraryMotion(it, library) }
         super.onPause()
     }
 
@@ -304,6 +317,7 @@ class HomeActivity : Activity() {
         closed = true
         finishHomeReturn()
         stopSearchAnimation()
+        libraryMotion?.let(::stopLibraryAnimation)
         appGeneration++
         appWorker.shutdownNow()
         icons.close()
@@ -359,14 +373,15 @@ class HomeActivity : Activity() {
         packageRefreshPending = packageRefreshPending || packagesChanged
         val token = ++appGeneration
         appWorker.execute {
-            val snapshot = apps.entries()
+            val snapshot = AppBrowser.Catalog(apps.entries())
             handler.post {
                 if (!closed && token == appGeneration) publishApps(snapshot)
             }
         }
     }
 
-    private fun publishApps(snapshot: List<Apps.Entry>) {
+    private fun publishApps(nextCatalog: AppBrowser.Catalog) {
+        val snapshot = nextCatalog.entries
         val firstCatalog = entries.isEmpty() && snapshot.isNotEmpty()
         val catalogChanged = entries.size != snapshot.size || entries.indices.any { index ->
             val previous = entries[index]
@@ -376,7 +391,7 @@ class HomeActivity : Activity() {
         val packagesChanged = packageRefreshPending
         packageRefreshPending = false
         if (catalogChanged) icons.invalidate()
-        entries = snapshot
+        catalog = nextCatalog
         if (!store.settingEnabled("seeded", false) && entries.isNotEmpty()) {
             val personal = entries.filter { it.key.profile == apps.personalSerial }
             val dockEntries = listOf("dialer", "messaging", "chrome", "camera").mapNotNull { term ->
@@ -396,18 +411,19 @@ class HomeActivity : Activity() {
         // An unchanged resume can finish after a new gesture starts. Keep its views attached.
         if ((search || library) && current != null) {
             if (catalogChanged || packagesChanged) {
-                if (search && firstCatalog && !packagesChanged && renderedHome == homeDisplay()) {
+                if (firstCatalog && !packagesChanged && renderedHome == homeDisplay()) {
                     homeLayer?.let(::refreshTileCatalog)
                 } else {
                     renderedHome = null
                 }
-                current.updateEntries(entries)
+                current.updateEntries(catalog)
             } else if (library) {
-                current.updateEntries(entries)
+                current.updateEntries(catalog)
             }
         } else if (firstCatalog && !packagesChanged && renderedHome == homeDisplay()) {
             // An initial catalog can arrive while a folder or page is moving.
             refreshTileCatalog(content)
+            libraryMotion?.panel?.updateEntries(catalog)
         } else if (catalogChanged || packagesChanged || renderedHome != homeDisplay()) {
             if (gesture.active) gesture.cancel()
             render()
@@ -459,8 +475,10 @@ class HomeActivity : Activity() {
         if (closed || !::gesture.isInitialized || content.width == 0 || isFinishing) return
         finishHomeReturn()
         if (searchClosing) search = false
-        val backdrop = homeLayer?.takeIf { search && folderPresentation == null && editToolbar == null }
-        val openingSearch = backdrop != null && searchPanel == null
+        libraryMotion?.let(::stopLibraryAnimation)
+        libraryMotion = null
+        val backdrop = homeLayer?.takeIf { (search || library) && folderPresentation == null && editToolbar == null }
+        val openingSearch = search && backdrop != null && searchPanel == null
         stopSearchAnimation()
         searchPanel = null
         searchClosing = false
@@ -504,25 +522,29 @@ class HomeActivity : Activity() {
             return
         }
         if (isPanel) {
-            val panel = AppBrowser(this, apps, entries, darkMode, store, privateOpen,
-                onBack = ::back, onLibrary = { showBrowser(false) }, onAdd = ::addApp, onPrivate = { privateOpen = it },
-                onLaunch = { key, anchor, user -> launch(key, anchor, user) })
+            val panel = newBrowser()
             browser = panel
-            val view = panel.view(search, useHomeBackdrop = backdrop != null,
-                focusOnOpen = !gesture.previewingSearch)
+            val view = panel.view(search, useHomeBackdrop = search && backdrop != null,
+                focusOnOpen = !gesture.previewingSearch && (search || backdrop == null))
+            content.addView(view, FrameLayout.LayoutParams(-1, -1))
             if (backdrop != null) {
                 backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 backdrop.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                backdrop.background = if (systemWallpaper) null
+                backdrop.background = if (systemWallpaper || library) null
                     else CuperaWallpaper(store.setting("wallpaper") == "dusk" || darkMode)
                 workspace.translationX = 0f
                 previewView?.let(workspace::removeView)
                 previewView = null
                 previewPage = -1
-                searchPanel = view
-                drawSearchProgress(if (openingSearch && !reduced) 0f else 1f)
+                if (library) {
+                    backdrop.setRenderEffect(null)
+                    libraryMotion = LibraryMotion(panel, view, backdrop).also { finishLibraryMotion(it, true) }
+                } else {
+                    backdrop.visibility = View.VISIBLE
+                    searchPanel = view
+                    drawSearchProgress(if (openingSearch && !reduced) 0f else 1f)
+                }
             }
-            content.addView(view, FrameLayout.LayoutParams(-1, -1))
             if (openingSearch && !reduced && !gesture.previewingSearch) animateSearch(1f)
             return
         }
@@ -719,7 +741,19 @@ class HomeActivity : Activity() {
     private fun followPage(dx: Float) {
         if (!animateHomePages) return
         val direction = if (dx < 0) 1 else -1
-        showPagePreview(pageInDirection(direction), direction)
+        val adjacent = pageInDirection(direction)
+        if (!editing && direction > 0 && adjacent >= layout.pages) {
+            val motion = libraryMotion ?: stageLibrary()
+            if (motion != null) {
+                drawLibraryProgress(motion, -dx / content.width)
+                return
+            }
+        }
+        libraryMotion?.let {
+            if (adjacent in 0 until layout.pages) finishLibraryMotion(it, false)
+            else drawLibraryProgress(it, 0f)
+        }
+        showPagePreview(adjacent, direction)
         val width = content.width.toFloat()
         val travel = dx.coerceIn(-width, width)
         workspace.translationX = if (previewView != null) travel else if (reduced) 0f else travel * .24f
@@ -744,10 +778,21 @@ class HomeActivity : Activity() {
 
     private fun beginPageDrag(): Float {
         workspace.animate().cancel()
+        libraryMotion?.let { motion ->
+            stopLibraryAnimation(motion)
+            if (motion.progress > 0f) return -motion.progress * content.width
+        }
         return workspace.translationX / if (previewView == null) .24f else 1f
     }
 
     private fun settlePage(duration: Long = if (animateHomePages) 160L else 0L) {
+        libraryMotion?.let { motion ->
+            if (motion.progress > 0f) {
+                settleLibraryMotion(motion, open = false)
+                return
+            }
+            finishLibraryMotion(motion, false)
+        }
         val settling = workspace
         settling.animate().translationX(0f).setDuration(duration).withEndAction {
             if (workspace === settling) {
@@ -992,8 +1037,87 @@ class HomeActivity : Activity() {
         getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0)
     }
 
+    private fun newBrowser() = AppBrowser(this, apps, catalog, darkMode, store, privateOpen,
+        onBack = ::back, onLibrary = { showBrowser(false) }, onAdd = ::addApp, onPrivate = { privateOpen = it },
+        onLaunch = { key, anchor, user -> launch(key, anchor, user) })
+
+    private fun stageLibrary(): LibraryMotion? {
+        val home = homeLayer ?: return null
+        val panel = newBrowser()
+        android.os.Trace.beginSection("Cupera library preview build")
+        val view = try {
+            panel.view(search = false, focusOnOpen = false)
+        } finally {
+            android.os.Trace.endSection()
+        }
+        previewView?.let(workspace::removeView)
+        previewView = null
+        previewPage = -1
+        view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        content.addView(view, FrameLayout.LayoutParams(-1, -1))
+        return LibraryMotion(panel, view, home).also { libraryMotion = it }
+    }
+
+    private fun drawLibraryProgress(motion: LibraryMotion, progress: Float) {
+        motion.progress = progress.coerceIn(0f, 1f)
+        motion.home.visibility = if (motion.progress == 1f) View.INVISIBLE else View.VISIBLE
+        motion.view.visibility = if (motion.progress == 0f) View.INVISIBLE else View.VISIBLE
+        motion.panel.drawLibraryProgress(motion.progress, content.width)
+        workspace.translationX = -content.width * motion.progress
+        dock.alpha = 1f - motion.progress
+        homeFooter?.alpha = 1f - motion.progress
+    }
+
+    private fun stopLibraryAnimation(motion: LibraryMotion) {
+        motion.animator?.removeAllListeners()
+        motion.animator?.cancel()
+        motion.animator = null
+    }
+
+    private fun finishLibraryMotion(motion: LibraryMotion, open: Boolean) {
+        stopLibraryAnimation(motion)
+        motion.draggingReturn = false
+        drawLibraryProgress(motion, if (open) 1f else 0f)
+        if (open) {
+            motion.view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            motion.panel.focusLibrary()
+            return
+        }
+        motion.trackingReturn = false
+        libraryMotion = null
+        if (browser === motion.panel) browser = null
+        content.removeView(motion.view)
+        if (renderedHome != homeDisplay()) {
+            render()
+        } else {
+            motion.home.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            motion.home.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
+            scheduleSearch(0)
+        }
+    }
+
+    private fun settleLibraryMotion(motion: LibraryMotion, open: Boolean) {
+        stopLibraryAnimation(motion)
+        val target = if (open) 1f else 0f
+        if (!ValueAnimator.areAnimatorsEnabled() || motion.progress == target) {
+            finishLibraryMotion(motion, open)
+            return
+        }
+        motion.animator = ValueAnimator.ofFloat(motion.progress, target).apply {
+            duration = ((if (open) 300 else 240) * abs(target - motion.progress)).toLong()
+            addUpdateListener { drawLibraryProgress(motion, it.animatedValue as Float) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    finishLibraryMotion(motion, open)
+                }
+            })
+            start()
+        }
+    }
+
     private fun showBrowser(forSearch: Boolean) {
         if (closed || isFinishing) return
+        if (!forSearch && search) closeKeyboard()
         resetPageIndicator()
         editing = false
         folder = null
@@ -1076,6 +1200,14 @@ class HomeActivity : Activity() {
     private fun back() {
         finishHomeReturn()
         when {
+            library && libraryMotion != null -> {
+                closeKeyboard()
+                invalidatePrivate()
+                library = false
+                reloadWorkspace()
+                settleLibraryMotion(checkNotNull(libraryMotion), false)
+                return
+            }
             gesture.previewingSearch -> {
                 gesture.cancel()
                 return
@@ -1442,7 +1574,17 @@ class HomeActivity : Activity() {
 
     private fun switchPage(index: Int) {
         if (index < 0 || index == page) { settlePage(); return }
-        if (!editing && index >= layout.pages) { showBrowser(false); return }
+        if (!editing && index >= layout.pages) {
+            val motion = libraryMotion
+            if (motion == null) showBrowser(false) else {
+                resetPageIndicator()
+                library = true
+                browser = motion.panel
+                motion.home.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                settleLibraryMotion(motion, true)
+            }
+            return
+        }
         if (index >= Layout.MAX_PAGES || index > layout.pages) return
         revealPageIndicator()
         val previous = page
@@ -1481,9 +1623,54 @@ class HomeActivity : Activity() {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) finishHomeReturn()
         if (searchClosing && event.actionMasked == MotionEvent.ACTION_DOWN) finishSearch()
         if (folderPresentation != null && folder == null) return true
+        if (library && libraryMotion?.let { handleLibraryReturn(it, event) } == true) return true
         if (::gesture.isInitialized && (!search || gesture.previewingSearch) &&
             !library && pageVisibilityDraft == null && gesture.handle(event)) return true
+        if (libraryMotion?.animator != null) return true
         return super.dispatchTouchEvent(event)
+    }
+
+    private fun handleLibraryReturn(motion: LibraryMotion, event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                motion.trackingReturn = motion.panel.canReturnToHomeBySwipe() &&
+                    root.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) != true
+                motion.returnStartX = event.x
+                motion.returnStartY = event.y
+            }
+            MotionEvent.ACTION_MOVE -> if (motion.trackingReturn) {
+                val dx = event.x - motion.returnStartX
+                val dy = abs(event.y - motion.returnStartY)
+                if (!motion.draggingReturn && dy > libraryTouchSlop && dy > abs(dx)) motion.trackingReturn = false
+                if (!motion.draggingReturn && dx > libraryTouchSlop && dx > dy * 1.2f) {
+                    stopLibraryAnimation(motion)
+                    motion.returnProgress = motion.progress
+                    motion.draggingReturn = true
+                    motion.view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                    cancelChild(event)
+                }
+                if (motion.draggingReturn) {
+                    if (ValueAnimator.areAnimatorsEnabled()) {
+                        drawLibraryProgress(motion, motion.returnProgress - dx / content.width)
+                    }
+                    return true
+                }
+            }
+            MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_UP -> {
+                motion.trackingReturn = false
+                if (motion.draggingReturn) {
+                    motion.draggingReturn = false
+                    library = event.actionMasked != MotionEvent.ACTION_UP || event.x - motion.returnStartX <= dp(44)
+                    if (!library) {
+                        invalidatePrivate()
+                        reloadWorkspace()
+                    }
+                    settleLibraryMotion(motion, library)
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private fun cancelChild(event: MotionEvent) {

@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.ScrollView
@@ -103,6 +104,122 @@ class LauncherScreenTest {
     @Test fun reversingAPageDragKeepsItsPageAndTheNextSwipeStillWorks() = pageDrag(reduceMotion = false)
 
     @Test fun reducedMotionKeepsHomePagesFollowingTheFinger() = pageDrag(reduceMotion = true)
+
+    @Test fun librarySwipesCanReverseAndKeepTheWallpaperFixed() = librarySwipes(reduceMotion = false)
+
+    @Test fun reducedMotionKeepsLibrarySwipesFollowingTheFinger() = librarySwipes(reduceMotion = true)
+
+    private fun librarySwipes(reduceMotion: Boolean) {
+        val arguments = InstrumentationRegistry.getArguments()
+        assumeTrue("Requires an isolated single-page layout", arguments.getString("pageFixture") == "true")
+        assumeTrue(android.animation.ValueAnimator.areAnimatorsEnabled())
+        val automation = instrumentation.uiAutomation
+        Workspace(instrumentation.targetContext).use { workspace ->
+            val initial = workspace.read()
+            assumeTrue(workspace.hiddenPages().isEmpty() && initial.pages == 1)
+            val motion = workspace.setting("motion", "system")
+            workspace.put("motion", if (reduceMotion) "reduced" else "system")
+            val home = open(HomeActivity::class.java)
+            try {
+                waitFor(home) { views ->
+                    home.hasWindowFocus() && views.any { it is ScrollView && it.isShown && it.height > 0 }
+                }
+                val position = IntArray(2)
+                onMain {
+                    val viewport = descendants(home.window.decorView).filterIsInstance<ScrollView>().first()
+                    viewport.getLocationOnScreen(position)
+                    position[0] += viewport.width / 2
+                    position[1] += viewport.height / 2
+                }
+                val x = position[0].toFloat()
+                val y = position[1].toFloat()
+                val travel = home.resources.displayMetrics.widthPixels * .34f
+                fun libraryInput() = descendants(home.window.decorView).filterIsInstance<EditText>()
+                    .firstOrNull { it.hint == "App Library" }
+                fun panelPosition(): Float = (checkNotNull(libraryInput()).parent as View).translationX
+                fun waitForLibrary(open: Boolean) = waitFor(home) {
+                    val input = libraryInput()
+                    if (open) input?.isShown == true && panelPosition() == 0f else input == null
+                }
+                fun drag(offset: Float, finish: Int, reverse: Boolean = false, blocked: Boolean = false) {
+                    val down = SystemClock.uptimeMillis()
+                    touch(down, MotionEvent.ACTION_DOWN, x, y, automation)
+                    var endAction = MotionEvent.ACTION_CANCEL
+                    var endX = x
+                    try {
+                        touch(down, MotionEvent.ACTION_MOVE, x + offset / 3, y, automation)
+                        touch(down, MotionEvent.ACTION_MOVE, x + offset, y, automation)
+                        waitFor(home) {
+                            val input = libraryInput()
+                            input?.isShown == true &&
+                                if (blocked) panelPosition() == 0f else panelPosition() > travel / 2
+                        }
+                        var previous = 0f
+                        onMain {
+                            val controls = checkNotNull(libraryInput()).parent as View
+                            val layers = controls.parent as ViewGroup
+                            val backdrop = layers.getChildAt(0)
+                            assertTrue("The wallpaper must be separate from the moving controls", backdrop !== controls)
+                            assertEquals(0f, backdrop.translationX, 0f)
+                            previous = panelPosition()
+                        }
+                        if (reverse) {
+                            touch(down, MotionEvent.ACTION_MOVE, x + offset / 3, y, automation)
+                            waitFor(home) { if (offset < 0) panelPosition() > previous else panelPosition() < previous }
+                            touch(down, MotionEvent.ACTION_MOVE, x, y, automation)
+                        }
+                        endX = if (reverse) x else x + offset
+                        endAction = finish
+                    } finally {
+                        touch(down, endAction, endX, y, automation)
+                    }
+                }
+                drag(-travel, MotionEvent.ACTION_CANCEL)
+                waitForLibrary(false)
+                drag(-travel, MotionEvent.ACTION_UP, reverse = true)
+                waitForLibrary(false)
+                drag(-travel, MotionEvent.ACTION_UP)
+                waitForLibrary(true)
+                val fixture = arguments.getString("libraryPrivateFixture")
+                if (!fixture.isNullOrBlank()) {
+                    val apps = Apps(home)
+                    val user = requireNotNull(apps.privateUser())
+                    try {
+                        assertTrue(apps.requestPrivate(user, locked = false))
+                        waitFor(home) { apps.privateUnlocked(user) }
+                        val title = apps.privateEntries(user)
+                            .single { it.info.componentName.packageName == fixture }.title
+                        waitFor(home) { views -> views.any { it is TextView && it.text == "Show apps" } }
+                        onMain {
+                            val button = descendants(home.window.decorView).filterIsInstance<TextView>()
+                                .first { it.text == "Show apps" }
+                            assertTrue(button.performClick())
+                        }
+                        waitFor(home) { views -> views.any { it.contentDescription == title } }
+                        onMain {
+                            assertTrue(home.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0)
+                        }
+                        drag(travel, MotionEvent.ACTION_UP, blocked = true)
+                        waitForLibrary(true)
+                        assertTrue(apps.requestPrivate(user, locked = true))
+                        waitFor(home) { views -> !apps.privateUnlocked(user) && views.none { it.contentDescription == title } }
+                    } finally {
+                        if (apps.privateUnlocked(user)) apps.requestPrivate(user, locked = true)
+                    }
+                }
+                drag(travel, MotionEvent.ACTION_CANCEL)
+                waitForLibrary(true)
+                drag(travel, MotionEvent.ACTION_UP, reverse = true)
+                waitForLibrary(true)
+                drag(travel, MotionEvent.ACTION_UP)
+                waitForLibrary(false)
+                assertEquals(initial, workspace.read())
+            } finally {
+                onMain { home.finish() }
+                workspace.put("motion", motion)
+            }
+        }
+    }
 
     private fun pageDrag(reduceMotion: Boolean) {
         assumeTrue("Requires an isolated emulator with an editable home layout",

@@ -12,6 +12,7 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
@@ -23,7 +24,7 @@ import java.util.Locale
 class AppBrowser(
     private val host: HomeActivity,
     private val apps: Apps,
-    private val entries: List<Apps.Entry>,
+    private var catalog: Catalog,
     private val dark: Boolean,
     private val store: Workspace,
     private var showingPrivate: Boolean,
@@ -35,6 +36,19 @@ class AppBrowser(
 ) {
     private companion object {
         val COMBINING_MARKS = Regex("\\p{M}+")
+
+        fun normalized(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKD)
+            .replace(COMBINING_MARKS, "").lowercase(Locale.ROOT).trim()
+    }
+
+    class Catalog(val entries: List<Apps.Entry>) {
+        private val keys = entries.map { normalized(it.title + " " + it.info.componentName.packageName) }
+
+        fun matching(query: String): List<Apps.Entry> {
+            if (query.isEmpty()) return entries
+            val words = query.split(' ')
+            return entries.filterIndexed { index, _ -> words.all(keys[index]::contains) }
+        }
     }
 
     private val foreground = Color.WHITE
@@ -47,20 +61,16 @@ class AppBrowser(
     private var selectedGroup: String? = null
     private var isSearch = false
     private var searchInput: EditText? = null
+    private var libraryControls: View? = null
+    private val libraryBackdrop = mutableListOf<View>()
     private val showSearchKeyboard = Runnable {
         val input = searchInput ?: return@Runnable
         if (input.isAttachedToWindow && input.hasFocus() && input.hasWindowFocus()) {
             host.getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
         }
     }
-    private var indexed = index(entries)
-
-    private fun index(apps: List<Apps.Entry>) = apps.map {
-        it to normalized(it.title + " " + it.info.componentName.packageName)
-    }
-
-    fun updateEntries(entries: List<Apps.Entry>) {
-        indexed = index(entries)
+    fun updateEntries(catalog: Catalog) {
+        this.catalog = catalog
         drawResults()
     }
 
@@ -115,21 +125,26 @@ class AppBrowser(
         root.addView(ScrollView(host).apply { addView(results) }, LinearLayout.LayoutParams(-1, 0, 1f))
         if (search) root.addView(input, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = host.dp(6) })
         drawResults()
-        if (search && focusOnOpen) focusSearch() else root.requestFocus()
-        return android.widget.FrameLayout(host).apply {
+        if (search && focusOnOpen) focusSearch() else if (search || focusOnOpen) root.requestFocus()
+        if (!search) libraryControls = root
+        return FrameLayout(host).apply {
             isClickable = useHomeBackdrop
             val systemWallpaper = store.setting("wallpaper", "tide") == "system"
             if (!useHomeBackdrop && !systemWallpaper) {
-                addView(View(host).apply {
+                val wallpaper = View(host).apply {
                     background = CuperaWallpaper(dark || store.setting("wallpaper") == "dusk")
                     val radius = host.dp(19).toFloat()
                     setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.CLAMP))
-                }, android.widget.FrameLayout.LayoutParams(-1, -1))
+                }
+                if (!search) libraryBackdrop.add(wallpaper)
+                addView(wallpaper, FrameLayout.LayoutParams(-1, -1))
             }
             if (search || systemWallpaper) {
-                addView(View(host).apply { setBackgroundColor(0x6a101725) }, android.widget.FrameLayout.LayoutParams(-1, -1))
+                val tint = View(host).apply { setBackgroundColor(0x6a101725) }
+                if (!search) libraryBackdrop.add(tint)
+                addView(tint, FrameLayout.LayoutParams(-1, -1))
             }
-            addView(root, android.widget.FrameLayout.LayoutParams(-1, -1))
+            addView(root, FrameLayout.LayoutParams(-1, -1))
             // Resize the browser controls without moving the blurred home underneath.
             setOnApplyWindowInsetsListener { _, insets ->
                 val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
@@ -138,6 +153,17 @@ class AppBrowser(
                 insets
             }
         }
+    }
+
+    fun canReturnToHomeBySwipe(): Boolean = query.isEmpty() && selectedGroup == null && !showingPrivate
+
+    fun drawLibraryProgress(progress: Float, width: Int) {
+        libraryControls?.translationX = width * (1f - progress)
+        libraryBackdrop.forEach { it.alpha = progress }
+    }
+
+    fun focusLibrary() {
+        libraryControls?.requestFocus()
     }
 
     fun focusSearch() {
@@ -154,10 +180,7 @@ class AppBrowser(
     private fun drawResults() {
         results.removeAllViews()
         privateContent = null
-        val words = query.split(' ')
-        val filtered = indexed.mapNotNull { (entry, key) ->
-            entry.takeIf { query.isEmpty() || words.all(key::contains) }
-        }
+        val filtered = catalog.matching(query)
         val grouped = !isSearch && query.isEmpty() && store.settingEnabled("library_groups")
         if (grouped) {
             val groups = filtered.groupBy(::category).toSortedMap()
@@ -327,6 +350,4 @@ class AppBrowser(
         }
     }
 
-    private fun normalized(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKD)
-        .replace(COMBINING_MARKS, "").lowercase(Locale.ROOT).trim()
 }
