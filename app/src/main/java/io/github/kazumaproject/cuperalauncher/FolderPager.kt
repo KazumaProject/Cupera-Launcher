@@ -6,11 +6,14 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sign
 
 @SuppressLint("ViewConstructor") // HomeActivity supplies the folder's pages at construction.
 internal class FolderPager(
@@ -24,6 +27,10 @@ internal class FolderPager(
     private var selected = initialPage
     private var gesturePage = initialPage
     private var flung = false
+    private var gestureStartX = 0f
+    private var gestureStartScroll = 0
+    private var multiplePointers = false
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     init {
         isHorizontalScrollBarEnabled = false
@@ -42,14 +49,24 @@ internal class FolderPager(
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            gesturePage = selected
-            flung = false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                gesturePage = selected
+                gestureStartX = event.x
+                gestureStartScroll = scrollX
+                flung = false
+                multiplePointers = false
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> multiplePointers = true
         }
         val handled = super.dispatchTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_UP -> if (!flung && scrollX != selected * pageWidth) {
-                val nearest = (scrollX.toFloat() / pageWidth).roundToInt()
+                // A batched MOVE may miss the frame before UP. Use the finger's final position.
+                val travel = gestureStartX - event.x
+                val position = if (multiplePointers) scrollX.toFloat() else
+                    gestureStartScroll + (abs(travel) - touchSlop).coerceAtLeast(0f) * sign(travel)
+                val nearest = (position / pageWidth).roundToInt()
                 showPage(nearest.coerceIn(gesturePage - 1, gesturePage + 1))
             }
             MotionEvent.ACTION_CANCEL -> showPage(gesturePage)

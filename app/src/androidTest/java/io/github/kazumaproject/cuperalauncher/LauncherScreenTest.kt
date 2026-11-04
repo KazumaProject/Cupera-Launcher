@@ -396,7 +396,7 @@ class LauncherScreenTest {
                 waitFor(home) { views -> views.any {
                     it.contentDescription == "Paged folder. Rename folder" && (it.parent as View).scaleX == 1f
                 } }
-                fun swipe(forward: Boolean) {
+                fun swipe(forward: Boolean, coalesced: Boolean = false) {
                     val path = FloatArray(3)
                     onMain {
                         val pager = descendants(home.window.decorView).filterIsInstance<FolderPager>().single()
@@ -409,10 +409,19 @@ class LauncherScreenTest {
                     val to = if (forward) path[1] else path[0]
                     val down = SystemClock.uptimeMillis()
                     touch(down, MotionEvent.ACTION_DOWN, from, path[2], instrumentation.uiAutomation)
-                    for (step in 1..9) {
-                        SystemClock.sleep(23)
-                        touch(down, MotionEvent.ACTION_MOVE, from + (to - from) * step / 9,
-                            path[2], instrumentation.uiAutomation)
+                    if (coalesced) {
+                        for (fraction in listOf(.40f, .72f)) {
+                            SystemClock.sleep(130)
+                            touch(down, MotionEvent.ACTION_MOVE, from + (to - from) * fraction,
+                                path[2], instrumentation.uiAutomation)
+                        }
+                        SystemClock.sleep(130)
+                    } else {
+                        for (step in 1..9) {
+                            SystemClock.sleep(23)
+                            touch(down, MotionEvent.ACTION_MOVE, from + (to - from) * step / 9,
+                                path[2], instrumentation.uiAutomation)
+                        }
                     }
                     touch(down, MotionEvent.ACTION_UP, to, path[2], instrumentation.uiAutomation)
                 }
@@ -424,6 +433,10 @@ class LauncherScreenTest {
                 }
                 expectPage(1, "Folder app 1", "Folder app 10")
                 swipe(true)
+                expectPage(2, "Folder app 10", "Folder app 1")
+                swipe(false)
+                expectPage(1, "Folder app 1", "Folder app 10")
+                swipe(true, coalesced = true)
                 expectPage(2, "Folder app 10", "Folder app 1")
                 swipe(false)
                 expectPage(1, "Folder app 1", "Folder app 10")
@@ -451,11 +464,19 @@ class LauncherScreenTest {
                     destination[2] = origin[1] + pager.height * .83f
                 }
                 val drag = SystemClock.uptimeMillis()
-                touch(drag, MotionEvent.ACTION_DOWN, sourceX, sourceY, instrumentation.uiAutomation)
-                touch(drag, MotionEvent.ACTION_MOVE, destination[0], destination[2], instrumentation.uiAutomation)
-                expectPage(2, "Folder app 10", "Folder app 1")
-                touch(drag, MotionEvent.ACTION_MOVE, destination[1], destination[2], instrumentation.uiAutomation)
-                touch(drag, MotionEvent.ACTION_UP, destination[1], destination[2], instrumentation.uiAutomation)
+                val automation = instrumentation.uiAutomation
+                touch(drag, MotionEvent.ACTION_DOWN, sourceX, sourceY, automation)
+                var released = false
+                try {
+                    SystemClock.sleep(32)
+                    touch(drag, MotionEvent.ACTION_MOVE, destination[0], destination[2], automation)
+                    expectPage(2, "Folder app 10", "Folder app 1")
+                    touch(drag, MotionEvent.ACTION_MOVE, destination[1], destination[2], automation)
+                    touch(drag, MotionEvent.ACTION_UP, destination[1], destination[2], automation)
+                    released = true
+                } finally {
+                    if (!released) touch(drag, MotionEvent.ACTION_CANCEL, destination[0], destination[2], automation)
+                }
                 waitFor(home) { views -> views.any { it.contentDescription == "Folder page 2 of 2" } &&
                     store.read().revision == installed.revision + 1 }
                 val moved = store.read()
