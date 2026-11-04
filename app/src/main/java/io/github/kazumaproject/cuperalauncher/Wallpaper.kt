@@ -1,13 +1,17 @@
 package io.github.kazumaproject.cuperalauncher
 
+import android.app.WallpaperManager
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.ColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.Shader
 import android.graphics.drawable.Drawable
+import kotlin.math.roundToInt
 
 class CuperaWallpaper(private val dusk: Boolean) : Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -41,6 +45,20 @@ class CuperaWallpaper(private val dusk: Boolean) : Drawable() {
         paint.shader = LinearGradient(.08f, .4f, .63f, .96f, mint, sea, Shader.TileMode.CLAMP)
         canvas.drawPath(path, paint)
         canvas.restoreToCount(save)
+    }
+
+    internal fun applyToAndroidHome(manager: WallpaperManager, display: Rect): Int {
+        val scale = minOf(1f, 2400f / maxOf(display.width(), display.height()))
+        val width = (display.width() * scale).roundToInt().coerceAtLeast(1)
+        val height = (display.height() * scale).roundToInt().coerceAtLeast(1)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        try {
+            setBounds(0, 0, width, height)
+            draw(Canvas(bitmap))
+            return manager.setBitmap(bitmap, null, false, WallpaperManager.FLAG_SYSTEM)
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     override fun setAlpha(alpha: Int) { paint.alpha = alpha; invalidateSelf() }

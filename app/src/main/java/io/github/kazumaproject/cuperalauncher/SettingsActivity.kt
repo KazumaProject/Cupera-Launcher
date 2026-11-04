@@ -3,6 +3,7 @@ package io.github.kazumaproject.cuperalauncher
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.NotificationManager
+import android.app.WallpaperManager
 import android.app.role.RoleManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,6 +12,8 @@ import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -18,6 +21,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.Toast
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 
 class SettingsActivity : Activity() {
     private lateinit var store: Workspace
@@ -112,6 +117,12 @@ class SettingsActivity : Activity() {
             "Wallpaper & Appearance" -> group {
                 choices("Appearance", "appearance", listOf("system", "light", "dark"), "system")
                 choices("Home wallpaper", "wallpaper", listOf("tide", "dusk", "system"), "tide")
+                val wallpaper = store.setting("wallpaper", "tide")
+                if (wallpaper == "tide" || wallpaper == "dusk") {
+                    row("Match Android Home wallpaper", "Keep the same design when returning from apps.") {
+                        confirmSharedWallpaper(wallpaper)
+                    }
+                }
                 row("Android wallpaper picker", "Android setting") {
                     external(Intent(Intent.ACTION_SET_WALLPAPER))
                 }
@@ -267,6 +278,53 @@ class SettingsActivity : Activity() {
         else external(apps.roles.createRequestRoleIntent(RoleManager.ROLE_HOME))
     }
 
+    private fun confirmSharedWallpaper(selected: String) {
+        val manager = WallpaperManager.getInstance(applicationContext)
+        if (!manager.isWallpaperSupported || !manager.isSetWallpaperAllowed) {
+            unavailable()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Replace Android Home wallpaper?")
+            .setMessage("Android and Cupera Home will share the current Cupera design. Android may crop the image to fit your display.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Replace") { _, _ -> applySharedWallpaper(manager, selected) }
+            .show()
+    }
+
+    private fun applySharedWallpaper(manager: WallpaperManager, selected: String) {
+        if (!settingWallpaper.compareAndSet(false, true)) {
+            Toast.makeText(this, "The wallpaper is already being updated.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val appContext = applicationContext
+        val bounds = windowManager.maximumWindowMetrics.bounds
+        val useDusk = selected == "dusk" || dark
+        val main = Handler(Looper.getMainLooper())
+        thread(name = "Cupera wallpaper") {
+            val applied = runCatching {
+                val id = CuperaWallpaper(useDusk).applyToAndroidHome(manager, bounds)
+                id != 0 && manager.getWallpaperId(WallpaperManager.FLAG_SYSTEM) == id
+            }.getOrDefault(false)
+            main.post {
+                val message = if (!applied) "Could not confirm the Android Home wallpaper."
+                else runCatching {
+                    Workspace(appContext).use { preferences ->
+                        if (preferences.setting("wallpaper", "tide") == selected) {
+                            preferences.put("wallpaper", "system")
+                            "Android and Cupera now share this wallpaper."
+                        } else {
+                            "Android wallpaper set. Choose System in Home wallpaper to match it."
+                        }
+                    }
+                }.getOrDefault("Android wallpaper set. Choose System in Home wallpaper to match it.")
+                settingWallpaper.set(false)
+                Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
+                if (!isFinishing && !isDestroyed && section == "Wallpaper & Appearance") render()
+            }
+        }
+    }
+
     private fun external(intent: Intent) { runCatching { startActivity(intent) }.onFailure { unavailable() } }
     private fun unavailable() { Toast.makeText(this, "This Android setting is unavailable.", Toast.LENGTH_SHORT).show() }
 
@@ -305,6 +363,7 @@ class SettingsActivity : Activity() {
         internal const val EXTRA_SECTION = "io.github.kazumaproject.cuperalauncher.extra.SETTINGS_SECTION"
         private const val EXPORT = 201
         private const val IMPORT = 202
+        private val settingWallpaper = AtomicBoolean()
         private val sections = listOf(
             "Home Screen", "Icons & Dock", "Wallpaper & Appearance", "Folders", "Gestures", "Widgets",
             "Search & App Library", "Notification Badges", "Private Space", "Accessibility", "Backup & Restore", "About Cupera"
