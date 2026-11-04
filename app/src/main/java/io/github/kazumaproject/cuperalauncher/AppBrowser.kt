@@ -42,6 +42,12 @@ class AppBrowser(
     private var selectedGroup: String? = null
     private var isSearch = false
     private var searchInput: EditText? = null
+    private val showSearchKeyboard = Runnable {
+        val input = searchInput ?: return@Runnable
+        if (input.isAttachedToWindow && input.hasFocus() && input.hasWindowFocus()) {
+            host.getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
     private var indexed = index(entries)
 
     private fun index(apps: List<Apps.Entry>) = apps.map {
@@ -125,11 +131,12 @@ class AppBrowser(
     fun focusSearch() {
         val input = searchInput ?: return
         input.requestFocus()
-        input.postDelayed({
-            if (input.isAttachedToWindow && input.hasFocus()) {
-                host.getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
-            }
-        }, 120)
+        input.removeCallbacks(showSearchKeyboard)
+        input.postDelayed(showSearchKeyboard, 120)
+    }
+
+    fun cancelPendingKeyboard() {
+        searchInput?.removeCallbacks(showSearchKeyboard)
     }
 
     private fun drawResults() {

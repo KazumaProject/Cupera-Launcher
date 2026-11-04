@@ -241,6 +241,7 @@ class HomeActivity : Activity() {
 
     override fun onPause() {
         BadgeListener.changed = null
+        browser?.cancelPendingKeyboard()
         finishHomeReturn()
         gesture.cancel()
         invalidatePrivate()
@@ -943,7 +944,10 @@ class HomeActivity : Activity() {
         } else message("This app is unavailable.")
     }
 
-    private fun closeKeyboard() { getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0) }
+    private fun closeKeyboard() {
+        browser?.cancelPendingKeyboard()
+        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0)
+    }
 
     private fun showBrowser(forSearch: Boolean) {
         if (closed || isFinishing) return
