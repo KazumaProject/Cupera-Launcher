@@ -39,6 +39,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.ScrollView
 import android.widget.Toast
 import kotlin.math.abs
 import kotlin.math.min
@@ -80,7 +81,7 @@ class HomeActivity : Activity() {
             }
         }
     }
-    private var previewView: View? = null
+    private var previewView: ScrollView? = null
     private var dockGrid: TileGrid? = null
     private var folderGrid: TileGrid? = null
     private var browser: AppBrowser? = null
@@ -314,6 +315,7 @@ class HomeActivity : Activity() {
 
     private fun render() {
         if (!::gesture.isInitialized || content.width == 0 || isFinishing) return
+        if (::workspace.isInitialized) workspace.animate().cancel()
         folderPresentation?.let {
             it.card.animate().cancel()
             it.title.animate().cancel()
@@ -359,7 +361,7 @@ class HomeActivity : Activity() {
         if (!editing && page !in visiblePages) {
             page = visiblePages.lastOrNull { it < page } ?: visiblePages.first()
         }
-        val homeLayer = FrameLayout(this)
+        val homeLayer = FrameLayout(this).apply { clipChildren = false }
         this.homeLayer = homeLayer
         content.addView(homeLayer, FrameLayout.LayoutParams(-1, -1))
         workspace = FrameLayout(this).apply { clipChildren = false }
@@ -517,38 +519,56 @@ class HomeActivity : Activity() {
         startActivity(Intent(this, SettingsActivity::class.java).putExtra(SettingsActivity.EXTRA_SECTION, section))
     }
 
-    private fun wrapGrid(tiles: TileGrid) = android.widget.ScrollView(this).apply {
+    private fun wrapGrid(tiles: TileGrid, interactive: Boolean = true) = object : ScrollView(this) {
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean =
+            !interactive || super.dispatchTouchEvent(event)
+    }.apply {
         isVerticalScrollBarEnabled = false
         addView(tiles, FrameLayout.LayoutParams(tiles.gridWidth, tiles.gridHeight))
     }
 
+    private fun pageViewportContains(x: Float, y: Float): Boolean =
+        grid?.viewportContains(x, y) == true ||
+            (previewView?.getChildAt(0) as? TileGrid)?.viewportContains(x, y) == true
+
     private fun followPage(dx: Float) {
         if (reduced) return
         val direction = if (dx < 0) 1 else -1
-        val adjacent = pageInDirection(direction)
-        val current = grid ?: return
-        workspace.animate().cancel()
-        if (adjacent != previewPage) {
-            previewView?.let(workspace::removeView)
-            previewView = null
-            previewPage = adjacent
-            if (adjacent in 0 until layout.pages) {
-                val neighbor = TileGrid(this, adjacent, "", current.gridWidth, current.gridHeight, 4, 6, ::tileView)
-                neighbor.populate(layout.tiles)
-                val primary = workspace.getChildAt(0)
-                previewView = wrapGrid(neighbor).apply { translationX = (direction * content.width).toFloat() }
-                workspace.addView(previewView, FrameLayout.LayoutParams(primary.layoutParams as FrameLayout.LayoutParams))
-            }
-        }
-        workspace.translationX = dx * if (previewView == null) .24f else 1f
+        showPagePreview(pageInDirection(direction), direction)
+        val width = content.width.toFloat()
+        workspace.translationX = dx.coerceIn(-width, width) * if (previewView == null) .24f else 1f
     }
 
-    private fun settlePage() {
-        val duration = if (reduced) 0L else 160L
-        workspace.animate().translationX(0f).setDuration(duration).withEndAction {
-            previewView?.let(workspace::removeView)
-            previewView = null
-            previewPage = -1
+    private fun showPagePreview(adjacent: Int, direction: Int) {
+        if (adjacent == previewPage) return
+        val current = grid ?: return
+        previewView?.let(workspace::removeView)
+        previewView = null
+        previewPage = adjacent
+        if (adjacent !in 0 until layout.pages) return
+        val neighbor = TileGrid(this, adjacent, "", current.gridWidth, current.gridHeight, 4, 6, ::tileView)
+        neighbor.populate(layout.tiles)
+        val primary = workspace.getChildAt(0)
+        previewView = wrapGrid(neighbor, interactive = false).apply {
+            translationX = (direction * content.width).toFloat()
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        }
+        workspace.addView(previewView, FrameLayout.LayoutParams(primary.layoutParams as FrameLayout.LayoutParams))
+    }
+
+    private fun beginPageDrag(): Float {
+        workspace.animate().cancel()
+        return workspace.translationX / if (previewView == null) .24f else 1f
+    }
+
+    private fun settlePage(duration: Long = if (reduced) 0L else 160L) {
+        val settling = workspace
+        settling.animate().translationX(0f).setDuration(duration).withEndAction {
+            if (workspace === settling) {
+                previewView?.let(settling::removeView)
+                previewView = null
+                previewPage = -1
+            }
         }.start()
         scheduleSearch(duration)
     }
@@ -1047,7 +1067,8 @@ class HomeActivity : Activity() {
         if (!editing && index >= layout.pages) { showBrowser(false); return }
         if (index >= Layout.MAX_PAGES || index > layout.pages) return
         revealPageIndicator()
-        val direction = if (index > page) 1 else -1
+        val previous = page
+        val direction = if (index > previous) 1 else -1
         val offset = if (previewPage == index && previewView != null) workspace.translationX + direction * content.width
             else content.width * .26f * direction
         page = index
@@ -1055,10 +1076,10 @@ class HomeActivity : Activity() {
         render()
         val duration = if (!reduced && !gesture.active) 225L else 0L
         if (duration > 0) {
+            showPagePreview(previous, -direction)
             workspace.translationX = offset
-            workspace.animate().translationX(0f).setDuration(duration).start()
-        }
-        scheduleSearch(duration)
+            settlePage(duration)
+        } else scheduleSearch(duration)
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -1177,6 +1198,7 @@ class HomeActivity : Activity() {
         private var y = 0f
         private var tracking = false
         private var paging = false
+        private var pageDragOffset = 0f
         private var verticalScroll = false
         private var emptyHold = false
         private var revision = 0L
@@ -1225,7 +1247,7 @@ class HomeActivity : Activity() {
                     startX = x
                     startY = y
                     val s = slot(x, y)
-                    if (s == null && (host.folder != null || host.editing || host.grid?.viewportContains(x, y) != true)) {
+                    if (s == null && (host.folder != null || host.editing || !host.pageViewportContains(x, y))) {
                         return false
                     }
                     tracking = true
@@ -1253,6 +1275,7 @@ class HomeActivity : Activity() {
                             draw()
                         } else if (host.folder == null && abs(dx) > abs(dy) * 1.2f) {
                             paging = true
+                            pageDragOffset = host.beginPageDrag()
                             host.revealPageIndicator()
                             host.cancelChild(event)
                         } else {
@@ -1267,7 +1290,7 @@ class HomeActivity : Activity() {
                     }
                     if (paging) {
                         val travel = Math.copySign((abs(dx) - slop).coerceAtLeast(0f), dx)
-                        host.followPage(travel)
+                        host.followPage(pageDragOffset + travel)
                         return true
                     }
                     updateDrag()
@@ -1276,7 +1299,7 @@ class HomeActivity : Activity() {
                 MotionEvent.ACTION_UP -> {
                     host.handler.removeCallbacks(hold)
                     if (paging) {
-                        val dx = x - startX
+                        val dx = pageDragOffset + x - startX
                         paging = false
                         val threshold = host.dp(44)
                         when {
@@ -1383,6 +1406,7 @@ class HomeActivity : Activity() {
             edge = 0
             tracking = false
             paging = false
+            pageDragOffset = 0f
             verticalScroll = false
             emptyHold = false
         }

@@ -69,6 +69,46 @@ class LauncherScreenTest {
         } finally { onMain { home.finish() } }
     }
 
+    @Test fun reversingAPageDragKeepsItsPageAndTheNextSwipeStillWorks() {
+        assumeTrue("Requires an isolated emulator with an editable home layout",
+            InstrumentationRegistry.getArguments().getString("pageFixture") == "true")
+        Workspace(instrumentation.targetContext).use { workspace ->
+            val initial = workspace.read()
+            assumeTrue(workspace.hiddenPages().isEmpty() && initial.pages == 1)
+            val marker = Tile(java.util.UUID.randomUUID().toString(), TileKind.DATE, Slot(1, 0))
+            assertTrue(workspace.save(initial.revision, initial.tiles + marker))
+            var activity: Activity? = null
+            try {
+                val home = open(HomeActivity::class.java).also { activity = it }
+                val (x, y) = whitespaceBelowGrid(home)
+                val travel = home.resources.displayMetrics.widthPixels * .34f
+                fun swipe(vararg offsets: Float) {
+                    val automation = instrumentation.uiAutomation
+                    val down = SystemClock.uptimeMillis()
+                    touch(down, MotionEvent.ACTION_DOWN, x, y, automation)
+                    offsets.forEachIndexed { index, offset ->
+                        SystemClock.sleep(maxOf(0L, down + (index + 1) * 30L - SystemClock.uptimeMillis()))
+                        touch(down, MotionEvent.ACTION_MOVE, x + offset, y, automation, sync = false)
+                    }
+                    touch(down, MotionEvent.ACTION_UP, x + offsets.last(), y, automation)
+                }
+                swipe(-travel / 2, -travel, -travel / 2, 0f)
+                waitFor(home) { views -> views.any { it.contentDescription == "Page 1 of 2. Next page" } }
+                swipe(-travel / 2, -travel)
+                waitFor(home) { views -> views.any { it.contentDescription == "Page 2 of 2. Next page" } }
+                swipe(travel / 2, travel)
+                waitFor(home) { views -> views.any { it.contentDescription == "Page 1 of 2. Next page" } }
+                assertEquals(initial.tiles + marker, workspace.read().tiles)
+            } finally {
+                activity?.let { home -> onMain { home.finish() } }
+                val current = workspace.read()
+                if (current.tiles.any { it.id == marker.id }) {
+                    assertTrue(workspace.save(current.revision, current.tiles.filterNot { it.id == marker.id }))
+                }
+            }
+        }
+    }
+
     @Test fun searchCanOpenFromHomeAndFiltersApps() {
         val home = open(HomeActivity::class.java)
         try {
