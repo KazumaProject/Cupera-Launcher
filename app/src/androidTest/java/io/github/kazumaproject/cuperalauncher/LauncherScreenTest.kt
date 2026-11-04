@@ -170,7 +170,9 @@ class LauncherScreenTest {
                 onMain {
                     descendants(home.window.decorView).filterIsInstance<TextView>().first { it.text == "Done" }.performClick()
                 }
-                waitFor(home) { views -> views.any { it.contentDescription == "Folder" && it.width > 0 } }
+                waitFor(home) { views ->
+                    home.hasWindowFocus() && views.any { it.contentDescription == "Folder" && it.width > 0 }
+                }
                 val (folderX, folderY) = screenCenter(home, "Folder")
                 val tap = SystemClock.uptimeMillis()
                 touch(tap, MotionEvent.ACTION_DOWN, folderX, folderY)
@@ -211,7 +213,9 @@ class LauncherScreenTest {
                     val views = descendants(home.window.decorView)
                     assertTrue(views.first { it.contentDescription == "Folder" }.performClick())
                     val title = views.first { it.contentDescription == "Folder. Rename folder" }
-                    assertTrue("Back must be sent before the folder is fully open", (title.parent as View).scaleX < 1f)
+                    val systemAnimations = android.animation.ValueAnimator.areAnimatorsEnabled()
+                    assertTrue("Back must be sent before the folder is fully open (system animations: $systemAnimations)",
+                        (title.parent as View).scaleX < 1f)
                     home.onBackPressed()
                 }
                 waitFor(home) { views ->
@@ -258,7 +262,9 @@ class LauncherScreenTest {
     }
 
     private fun whitespaceBelowGrid(home: Activity): Pair<Float, Float> {
-        waitFor(home) { views -> views.any { it is ScrollView && it.height > it.getChildAt(0).bottom } }
+        waitFor(home) { views ->
+            home.hasWindowFocus() && views.any { it is ScrollView && it.height > it.getChildAt(0).bottom }
+        }
         val point = FloatArray(2)
         onMain {
             val viewport = descendants(home.window.decorView).filterIsInstance<ScrollView>().first()

@@ -112,11 +112,14 @@ class HomeActivity : Activity() {
 
     private val packages = object : LauncherApps.Callback() {
         override fun onPackageAdded(name: String, user: UserHandle) {
-            if (isPublicProfile(user)) refreshApps(if (store.settingEnabled("add_new", false)) name else null)
-            else invalidatePrivate()
+            if (isPublicProfile(user)) {
+                icons.invalidate()
+                refreshApps(if (store.settingEnabled("add_new", false)) name else null)
+            } else invalidatePrivate()
         }
         override fun onPackageRemoved(name: String, user: UserHandle) {
             if (!isPublicProfile(user)) { invalidatePrivate(); return }
+            icons.invalidate()
             val manager = getSystemService(UserManager::class.java)
             val serial = manager.getSerialNumberForUser(user)
             val remaining = layout.tiles.filterNot {
@@ -129,7 +132,10 @@ class HomeActivity : Activity() {
         override fun onPackagesAvailable(names: Array<out String>, user: UserHandle, replacing: Boolean) = changed(user)
         override fun onPackagesUnavailable(names: Array<out String>, user: UserHandle, replacing: Boolean) = changed(user)
         private fun changed(user: UserHandle) {
-            if (isPublicProfile(user)) refreshApps() else invalidatePrivate()
+            if (isPublicProfile(user)) {
+                icons.invalidate()
+                refreshApps()
+            } else invalidatePrivate()
         }
     }
 
@@ -252,7 +258,7 @@ class HomeActivity : Activity() {
     }
 
     private fun publishApps(snapshot: List<Apps.Entry>) {
-        if (entries != snapshot) icons.invalidate()
+        if (entries.map(Apps.Entry::key) != snapshot.map(Apps.Entry::key)) icons.invalidate()
         entries = snapshot
         if (!store.settingEnabled("seeded", false) && entries.isNotEmpty()) {
             val personal = entries.filter { it.key.profile == apps.personalSerial }
