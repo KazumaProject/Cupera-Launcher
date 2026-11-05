@@ -159,10 +159,14 @@ class LauncherScreenTest {
                         var previous = 0f
                         onMain {
                             val controls = checkNotNull(libraryInput()).parent as View
-                            val layers = controls.parent as ViewGroup
-                            val backdrop = layers.getChildAt(0)
-                            assertTrue("The wallpaper must be separate from the moving controls", backdrop !== controls)
+                            val panel = controls.parent as View
+                            val layers = panel.parent as ViewGroup
+                            val panelIndex = layers.indexOfChild(panel)
+                            assertTrue("The wallpaper must sit behind the visible Home layer", panelIndex >= 2)
+                            val backdrop = layers.getChildAt(panelIndex - 2) as ViewGroup
+                            val wallpaper = backdrop.getChildAt(0)
                             assertEquals(0f, backdrop.translationX, 0f)
+                            assertEquals(0f, wallpaper.translationX, 0f)
                             previous = panelPosition()
                         }
                         if (reverse) {

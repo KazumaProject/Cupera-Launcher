@@ -102,7 +102,7 @@ class HomeActivity : Activity() {
     private var searchAnimator: ValueAnimator? = null
     private var searchProgress = 0f
     private var searchClosing = false
-    private class LibraryMotion(val panel: AppBrowser, val view: View, val home: FrameLayout) {
+    private class LibraryMotion(val panel: AppBrowser, val view: View, val home: FrameLayout, val background: View) {
         var progress = 0f
         var animator: ValueAnimator? = null
         var returnStartX = 0f
@@ -587,8 +587,10 @@ class HomeActivity : Activity() {
         if (isPanel) {
             val panel = newBrowser()
             browser = panel
+            val libraryBackground = if (library && backdrop != null) FrameLayout(this) else null
             val view = panel.view(search, useHomeBackdrop = search && backdrop != null,
-                focusOnOpen = !gesture.previewingSearch && (search || backdrop == null))
+                focusOnOpen = !gesture.previewingSearch && (search || backdrop == null),
+                libraryBackground = libraryBackground)
             content.addView(view, FrameLayout.LayoutParams(-1, -1))
             if (backdrop != null) {
                 backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
@@ -599,7 +601,9 @@ class HomeActivity : Activity() {
                 previewPage = -1
                 if (library) {
                     backdrop.setRenderEffect(null)
-                    libraryMotion = LibraryMotion(panel, view, backdrop).also { finishLibraryMotion(it, true) }
+                    val background = checkNotNull(libraryBackground)
+                    content.addView(background, content.indexOfChild(backdrop), FrameLayout.LayoutParams(-1, -1))
+                    libraryMotion = LibraryMotion(panel, view, backdrop, background).also { finishLibraryMotion(it, true) }
                 } else {
                     backdrop.visibility = View.VISIBLE
                     searchPanel = view
@@ -1113,9 +1117,10 @@ class HomeActivity : Activity() {
     private fun stageLibrary(): LibraryMotion? {
         val home = homeLayer ?: return null
         val panel = newBrowser()
+        val background = FrameLayout(this)
         android.os.Trace.beginSection("Cupera library preview build")
         val view = try {
-            panel.view(search = false, focusOnOpen = false)
+            panel.view(search = false, focusOnOpen = false, libraryBackground = background)
         } finally {
             android.os.Trace.endSection()
         }
@@ -1123,8 +1128,9 @@ class HomeActivity : Activity() {
         previewView = null
         previewPage = -1
         view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        content.addView(background, content.indexOfChild(home), FrameLayout.LayoutParams(-1, -1))
         content.addView(view, FrameLayout.LayoutParams(-1, -1))
-        return LibraryMotion(panel, view, home).also { libraryMotion = it }
+        return LibraryMotion(panel, view, home, background).also { libraryMotion = it }
     }
 
     private fun drawLibraryProgress(motion: LibraryMotion, progress: Float) {
@@ -1157,6 +1163,7 @@ class HomeActivity : Activity() {
         libraryMotion = null
         if (browser === motion.panel) browser = null
         content.removeView(motion.view)
+        content.removeView(motion.background)
         if (renderedHome != homeDisplay()) {
             render()
         } else {
@@ -1166,7 +1173,7 @@ class HomeActivity : Activity() {
         }
     }
 
-    private fun settleLibraryMotion(motion: LibraryMotion, open: Boolean) {
+    private fun settleLibraryMotion(motion: LibraryMotion, open: Boolean, fromReturnSwipe: Boolean = false) {
         stopLibraryAnimation(motion)
         val target = if (open) 1f else 0f
         if (!ValueAnimator.areAnimatorsEnabled() || motion.progress == target) {
@@ -1174,7 +1181,14 @@ class HomeActivity : Activity() {
             return
         }
         motion.animator = ValueAnimator.ofFloat(motion.progress, target).apply {
-            duration = ((if (open) 300 else 240) * abs(target - motion.progress)).toLong()
+            val distance = abs(target - motion.progress)
+            if (fromReturnSwipe && !open && !reduced) {
+                // Follow the measured deceleration from the released position.
+                duration = (340 * (distance / .4f).coerceAtMost(1f)).toLong()
+                interpolator = PathInterpolator(.28f, .1f, .25f, 1f)
+            } else {
+                duration = ((if (open) 300 else 240) * distance).toLong()
+            }
             addUpdateListener { drawLibraryProgress(motion, it.animatedValue as Float) }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
@@ -1790,7 +1804,7 @@ class HomeActivity : Activity() {
                         invalidatePrivate()
                         reloadWorkspace()
                     }
-                    settleLibraryMotion(motion, library)
+                    settleLibraryMotion(motion, library, fromReturnSwipe = true)
                     return true
                 }
             }

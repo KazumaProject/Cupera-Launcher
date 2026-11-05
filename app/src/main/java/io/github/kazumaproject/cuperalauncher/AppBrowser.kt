@@ -76,7 +76,12 @@ class AppBrowser(
         drawResults()
     }
 
-    fun view(search: Boolean, useHomeBackdrop: Boolean = false, focusOnOpen: Boolean = true): View {
+    fun view(
+        search: Boolean,
+        useHomeBackdrop: Boolean = false,
+        focusOnOpen: Boolean = true,
+        libraryBackground: FrameLayout? = null
+    ): View {
         isSearch = search
         val root = host.vertical().apply {
             setPadding(host.dp(16), 0, host.dp(16), 0)
@@ -132,6 +137,7 @@ class AppBrowser(
         if (!search) libraryControls = root
         return FrameLayout(host).apply {
             isClickable = useHomeBackdrop
+            val wallpaperHost = libraryBackground ?: this
             val systemWallpaper = store.setting("wallpaper", "tide") == "system"
             if (!useHomeBackdrop && !systemWallpaper) {
                 val wallpaper = View(host).apply {
@@ -140,12 +146,12 @@ class AppBrowser(
                     setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.CLAMP))
                 }
                 if (!search) libraryBackdrop.add(wallpaper)
-                addView(wallpaper, FrameLayout.LayoutParams(-1, -1))
+                wallpaperHost.addView(wallpaper, FrameLayout.LayoutParams(-1, -1))
             }
             if (search || systemWallpaper) {
                 val tint = View(host).apply { setBackgroundColor(0x6a101725) }
                 if (search) searchTint = tint else libraryBackdrop.add(tint)
-                addView(tint, FrameLayout.LayoutParams(-1, -1))
+                wallpaperHost.addView(tint, FrameLayout.LayoutParams(-1, -1))
             }
             addView(root, FrameLayout.LayoutParams(-1, -1))
             // Resize the browser controls without moving the blurred home underneath.
