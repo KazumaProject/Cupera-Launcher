@@ -15,6 +15,7 @@
         android:theme="@style/Theme.Cupera">
         <activity
             android:name=".HomeActivity"
+            android:theme="@style/Theme.Cupera.Home"
             android:exported="true"
             android:launchMode="singleTask">
             <intent-filter>
