@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.os.UserHandle
 import android.text.Editable
 import android.text.TextWatcher
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
@@ -53,7 +54,7 @@ class AppBrowser(
 
     private val foreground = Color.WHITE
     private val secondary = 0xffd4e0ef.toInt()
-    private val surface get() = if (dark || isSearch) 0xe5253247.toInt() else 0x66e9f5ff
+    private val surface get() = if (isSearch) 0x58323a4b else if (dark) 0xe5253247.toInt() else 0x66e9f5ff
     private lateinit var results: LinearLayout
     private var privateContent: LinearLayout? = null
     private var generation = 0
@@ -63,6 +64,7 @@ class AppBrowser(
     private var searchInput: EditText? = null
     private var searchControls: View? = null
     private var searchTint: View? = null
+    private var searchResultsToolbar: View? = null
     private var libraryControls: View? = null
     private val libraryBackdrop = mutableListOf<View>()
     private val showSearchKeyboard = Runnable {
@@ -101,7 +103,8 @@ class AppBrowser(
             }
         }
         toolbar.addView(settings)
-        root.addView(toolbar)
+        if (!search) root.addView(toolbar)
+        searchResultsToolbar = toolbar.takeIf { search }
         root.accessibilityPaneTitle = if (search) "Search" else "App Library"
         val input = EditText(host).apply {
             hint = if (search) "Search apps" else "App Library"
@@ -111,9 +114,9 @@ class AppBrowser(
             setHintTextColor(secondary)
             setSingleLine()
             textSize = 16f
-            minHeight = host.dp(48)
+            minHeight = host.dp(if (search) 44 else 48)
             setPadding(host.dp(15), 0, host.dp(15), 0)
-            background = rounded(surface, host.dp(15).toFloat())
+            background = rounded(surface, host.dp(if (search) 22 else 15).toFloat())
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -196,6 +199,11 @@ class AppBrowser(
         results.removeAllViews()
         privateContent = null
         val filtered = catalog.matching(query)
+        if (isSearch && query.isEmpty()) {
+            drawSuggestions()
+            return
+        }
+        if (isSearch) searchResultsToolbar?.let(results::addView)
         val grouped = !isSearch && query.isEmpty() && store.settingEnabled("library_groups")
         if (grouped) {
             val groups = filtered.groupBy(::category).toSortedMap()
@@ -227,6 +235,50 @@ class AppBrowser(
         if (!isSearch && query.isEmpty() && selectedGroup == null && store.settingEnabled("private_container")) {
             apps.privateUser()?.let(::drawPrivate)
         }
+    }
+
+    private fun drawSuggestions() {
+        val heading = host.horizontal().apply { gravity = Gravity.CENTER_VERTICAL }
+        heading.addView(host.label("Suggested apps", 13f, secondary, true).apply {
+            isAccessibilityHeading = true
+        }, LinearLayout.LayoutParams(0, host.dp(32), 1f))
+        heading.addView(host.label("Library", 13f, secondary).apply {
+            minHeight = host.dp(48)
+            minWidth = host.dp(48)
+            gravity = Gravity.CENTER
+            setOnClickListener { onLibrary() }
+        })
+        results.addView(heading)
+        // Home placement supplies real, local candidates without requiring usage access.
+        // Catalog contains only currently available public-profile apps.
+        val byKey = catalog.entries.associateBy { it.key }
+        val placed = store.read().tiles.mapNotNull { it.key?.let(byKey::get) }
+        val suggestions = (placed + catalog.entries).distinctBy { it.key }.take(4)
+        if (suggestions.isEmpty()) {
+            results.addView(host.label("No apps available", 16f, secondary))
+            return
+        }
+        val row = host.horizontal()
+        suggestions.forEach { entry ->
+            val cell = host.vertical().apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL }
+            val icon = ImageView(host).apply {
+                background = rounded(0x42dcefff, host.dp(12).toFloat())
+                clipToOutline = true
+                host.icons.show(this, entry)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            cell.addView(icon, LinearLayout.LayoutParams(host.dp(48), host.dp(48)))
+            cell.addView(host.label(entry.title, 11f, foreground).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(-1, host.dp(34)).apply { topMargin = host.dp(5) })
+            cell.contentDescription = entry.title
+            cell.setOnClickListener { onLaunch(entry.key, icon, null) }
+            row.addView(cell, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        repeat(4 - suggestions.size) { row.addView(View(host), LinearLayout.LayoutParams(0, 1, 1f)) }
+        results.addView(row)
     }
 
     private fun categoryCard(name: String, apps: List<Apps.Entry>): View = card().apply {

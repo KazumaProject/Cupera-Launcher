@@ -30,6 +30,27 @@ import org.junit.Test
 class LauncherScreenTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    @Test fun emptySearchShowsSuggestionsAndTypingStillFindsApps() {
+        val home = open(HomeActivity::class.java)
+        try {
+            waitFor(home) { views -> views.any { it is TextView && it.text == "⌕  Search" } }
+            onMain { descendants(home.window.decorView).filterIsInstance<TextView>().first { it.text == "⌕  Search" }.performClick() }
+            waitFor(home) { views -> views.any { it is TextView && it.text == "Suggested apps" } }
+            val entry = Apps(instrumentation.targetContext).entries().first()
+            onMain {
+                val views = descendants(home.window.decorView).toList()
+                assertFalse(views.any { it is TextView && it.text == "‹ Home" })
+                val input = views.filterIsInstance<EditText>().first { it.hint == "Search apps" }
+                input.setText(entry.title)
+            }
+            waitFor(home) { views -> views.none { it is TextView && it.text == "Suggested apps" } && views.any { it.contentDescription == entry.title } }
+            onMain { descendants(home.window.decorView).filterIsInstance<EditText>().first { it.hint == "Search apps" }.setText("") }
+            waitFor(home) { views -> views.any { it is TextView && it.text == "Suggested apps" } }
+            onMain { descendants(home.window.decorView).filterIsInstance<TextView>().first { it.text == "Library" }.performClick() }
+            waitFor(home) { views -> views.any { it is EditText && it.hint == "App Library" } }
+        } finally { onMain { home.finish() } }
+    }
+
     @Test fun slowShortDragDoesNotTurnIntoAnEditingHold() {
         val home = open(HomeActivity::class.java)
         try {

@@ -1452,7 +1452,8 @@ class HomeActivity : Activity() {
         val overlay = FrameLayout(this).apply {
             setOnClickListener { closeFolder() }
         }
-        val width = min((content.width * .76f).toInt(), dp(400))
+        // The recorded reference folder spans about 64% of the portrait screen.
+        val width = min((content.width * .64f).toInt(), dp(400))
         val height = min((width * 1.13f).toInt(), content.height * 3 / 4)
         val inset = dp(14)
         val children = layout.tiles.filter { it.slot.folder == id }
@@ -1507,8 +1508,9 @@ class HomeActivity : Activity() {
             panel.addView(pager, FrameLayout.LayoutParams(-1, -1).apply { bottomMargin = dotsHeight })
             panel.addView(dots, FrameLayout.LayoutParams(-1, dotsHeight, Gravity.BOTTOM))
         }
-        val centerOffset = (root.paddingBottom - root.paddingTop) / 2
-        val card = FrameLayout(this).apply { translationY = centerOffset.toFloat() }
+        // Keep the folder above the screen midpoint, independent of system bar insets.
+        val centerOffset = (root.paddingBottom - root.paddingTop) / 2f - root.height * .075f
+        val card = FrameLayout(this).apply { translationY = centerOffset }
         card.addView(panel, FrameLayout.LayoutParams(width, height, Gravity.CENTER))
         val title = label(tile.name, 22f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER
@@ -1517,7 +1519,7 @@ class HomeActivity : Activity() {
             contentDescription = "${tile.name}. Rename folder"
         }
         card.addView(title, FrameLayout.LayoutParams(width, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-            topMargin = ((content.height - height) / 2 - dp(77)).coerceAtLeast(0)
+            topMargin = ((content.height - height) / 2 - dp(52)).coerceAtLeast(0)
         })
         overlay.addView(card, FrameLayout.LayoutParams(-1, -1))
         homeLayer.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
