@@ -387,6 +387,48 @@ class LauncherScreenTest {
         } finally { onMain { home.finish() } }
     }
 
+    @Test fun reducedMotionSearchWaitsForReleaseAndCanBeCancelled() {
+        Workspace(instrumentation.targetContext).use { store ->
+            val originalMotion = store.setting("motion", "system")
+            store.put("motion", "reduced")
+            var activity: Activity? = null
+            try {
+                val home = open(HomeActivity::class.java).also { activity = it }
+                val bounds = home.getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
+                val x = bounds.width() * .5f
+                val startY = bounds.height() * .32f
+                val endY = startY + bounds.height() * .15f
+                val automation = instrumentation.uiAutomation
+                waitFor(home) { views ->
+                    home.hasWindowFocus() && views.any { it is TextView && it.text == "⌕  Search" }
+                }
+                fun swipe(finish: Int, finishY: Float) {
+                    val down = SystemClock.uptimeMillis()
+                    touch(down, MotionEvent.ACTION_DOWN, x, startY, automation)
+                    // A delayed first MOVE can already be beyond the search threshold.
+                    touch(down, MotionEvent.ACTION_MOVE, x, endY, automation)
+                    try {
+                        onMain {
+                            assertFalse(descendants(home.window.decorView).any {
+                                it is EditText && it.hint == "Search apps"
+                            })
+                        }
+                        if (finishY != endY) touch(down, MotionEvent.ACTION_MOVE, x, finishY, automation)
+                    } finally {
+                        touch(down, finish, x, finishY, automation)
+                    }
+                }
+                swipe(MotionEvent.ACTION_UP, startY)
+                swipe(MotionEvent.ACTION_CANCEL, endY)
+                swipe(MotionEvent.ACTION_UP, endY)
+                waitFor(home) { views -> views.any { it is EditText && it.hint == "Search apps" && it.hasFocus() } }
+            } finally {
+                activity?.let { home -> onMain { home.finish() } }
+                store.put("motion", originalMotion)
+            }
+        }
+    }
+
     @Test fun searchCanOpenFromHomeAndFiltersApps() {
         val home = open(HomeActivity::class.java)
         try {

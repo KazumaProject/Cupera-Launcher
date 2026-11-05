@@ -2011,11 +2011,6 @@ class HomeActivity : Activity() {
                             return true
                         } else {
                             verticalScroll = true
-                            if (host.folder == null && dy > host.dp(54) && host.store.settingEnabled("search_gesture")) {
-                                host.cancelChild(event)
-                                host.showBrowser(true)
-                                return true
-                            }
                             return false
                         }
                     }
