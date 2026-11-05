@@ -1,6 +1,7 @@
 package io.github.kazumaproject.cuperalauncher
 
 import android.app.WallpaperManager
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.ColorFilter
@@ -9,8 +10,10 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.drawable.Drawable
+import android.view.View
 import kotlin.math.roundToInt
 
 class CuperaWallpaper(private val dusk: Boolean) : Drawable() {
@@ -64,4 +67,35 @@ class CuperaWallpaper(private val dusk: Boolean) : Drawable() {
     override fun setAlpha(alpha: Int) { paint.alpha = alpha; invalidateSelf() }
     override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter; invalidateSelf() }
     @Deprecated("Drawable opacity") override fun getOpacity() = PixelFormat.OPAQUE
+}
+
+internal class DockWallpaper(context: Context, dusk: Boolean, width: Int, private val wallpaperHeight: Int, radius: Float) : View(context) {
+    private val wallpaper = CuperaWallpaper(dusk).apply { setBounds(0, 0, width, wallpaperHeight) }
+    // Keep enough wallpaper around the visible Dock for the blur to sample.
+    private val outset = (radius * 3).roundToInt()
+    private var sourceTop = 0
+
+    init {
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
+    }
+
+    fun sourceHeight(dockHeight: Int) = minOf(wallpaperHeight, dockHeight + 2 * outset)
+
+    fun alignTo(dock: View) {
+        translationX = -dock.x
+        val top = (dock.top - outset).coerceIn(0, wallpaperHeight - height)
+        translationY = (top - dock.top).toFloat()
+        if (sourceTop != top) {
+            sourceTop = top
+            invalidate()
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val save = canvas.save()
+        canvas.translate(0f, -sourceTop.toFloat())
+        wallpaper.draw(canvas)
+        canvas.restoreToCount(save)
+    }
 }

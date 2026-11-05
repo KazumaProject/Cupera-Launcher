@@ -167,6 +167,18 @@ class LauncherScreenTest {
                             val wallpaper = backdrop.getChildAt(0)
                             assertEquals(0f, backdrop.translationX, 0f)
                             assertEquals(0f, wallpaper.translationX, 0f)
+                            if (workspace.settingEnabled("dock")) {
+                                val homeLayer = layers.getChildAt(panelIndex - 1) as ViewGroup
+                                val dock = homeLayer.getChildAt(1) as ViewGroup
+                                assertEquals(homeLayer.getChildAt(0).translationX, dock.translationX, 0f)
+                                assertEquals(1f, dock.alpha, 0f)
+                                val material = dock.getChildAt(0) as? DockWallpaper
+                                if (workspace.setting("wallpaper") == "system") {
+                                    assertNull(material)
+                                } else {
+                                    assertEquals(0f, dock.x + requireNotNull(material).translationX, 0.01f)
+                                }
+                            }
                             previous = panelPosition()
                         }
                         if (reverse) {

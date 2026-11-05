@@ -63,6 +63,7 @@ class HomeActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var workspace: FrameLayout
     private lateinit var dock: FrameLayout
+    private var dockWallpaper: DockWallpaper? = null
     private var grid: TileGrid? = null
     private var previewPage = -1
     private var homeFooter: LinearLayout? = null
@@ -641,9 +642,24 @@ class HomeActivity : Activity() {
             topMargin = gridTop
         })
         dock = FrameLayout(this)
+        dockWallpaper = null
         dockGrid = null
         if (dockHeight > 0) {
-            dock.background = rounded(0x50edf5ff, dp(34).toFloat(), 0x64ffffff)
+            val radius = dp(34).toFloat()
+            val tint = rounded(0x50edf5ff, radius, 0x64ffffff)
+            if (systemWallpaper) {
+                dock.background = tint
+            } else {
+                val surface = DockWallpaper(this, store.setting("wallpaper") == "dusk" || darkMode,
+                    totalWidth, totalHeight, dp(12).toFloat())
+                dockWallpaper = surface
+                dock.background = rounded(Color.TRANSPARENT, radius)
+                dock.clipToOutline = true
+                dock.addView(surface, FrameLayout.LayoutParams(totalWidth, surface.sourceHeight(dockHeight), Gravity.TOP or Gravity.LEFT))
+                dock.addView(View(this).apply { background = tint }, FrameLayout.LayoutParams(-1, -1))
+                val frame = dock
+                frame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> surface.alignTo(frame) }
+            }
             val width = totalWidth - dp(48)
             val tiles = TileGrid(this, Slot.DOCK, "", width, dockHeight, 4, 1, ::tileView)
             dockGrid = tiles
@@ -1140,7 +1156,7 @@ class HomeActivity : Activity() {
         motion.panel.drawLibraryProgress(motion.progress, content.width)
         workspace.translationX = -content.width * motion.progress
         dock.translationX = workspace.translationX
-        dock.alpha = 1f - motion.progress
+        dockWallpaper?.alignTo(dock)
         homeFooter?.alpha = 1f - motion.progress
     }
 
