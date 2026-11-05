@@ -61,6 +61,8 @@ class AppBrowser(
     private var selectedGroup: String? = null
     private var isSearch = false
     private var searchInput: EditText? = null
+    private var searchControls: View? = null
+    private var searchTint: View? = null
     private var libraryControls: View? = null
     private val libraryBackdrop = mutableListOf<View>()
     private val showSearchKeyboard = Runnable {
@@ -80,6 +82,7 @@ class AppBrowser(
             setPadding(host.dp(16), 0, host.dp(16), 0)
             isFocusableInTouchMode = true
         }
+        if (search) searchControls = root
         val toolbar = host.horizontal().apply { gravity = Gravity.CENTER_VERTICAL }
         val back = host.label("‹ Home", 15f, foreground, true).apply {
             minHeight = host.dp(52)
@@ -141,7 +144,7 @@ class AppBrowser(
             }
             if (search || systemWallpaper) {
                 val tint = View(host).apply { setBackgroundColor(0x6a101725) }
-                if (!search) libraryBackdrop.add(tint)
+                if (search) searchTint = tint else libraryBackdrop.add(tint)
                 addView(tint, FrameLayout.LayoutParams(-1, -1))
             }
             addView(root, FrameLayout.LayoutParams(-1, -1))
@@ -156,6 +159,12 @@ class AppBrowser(
     }
 
     fun canReturnToHomeBySwipe(): Boolean = query.isEmpty() && selectedGroup == null && !showingPrivate
+
+    fun drawSearchProgress(progress: Float) {
+        searchTint?.alpha = progress
+        // A short pull softens Home before revealing the search controls.
+        searchControls?.alpha = ((progress - .25f) / .75f).coerceIn(0f, 1f)
+    }
 
     fun drawLibraryProgress(progress: Float, width: Int) {
         libraryControls?.translationX = width * (1f - progress)

@@ -589,8 +589,6 @@ class HomeActivity : Activity() {
             if (backdrop != null) {
                 backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 backdrop.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                backdrop.background = if (systemWallpaper || library) null
-                    else CuperaWallpaper(store.setting("wallpaper") == "dusk" || darkMode)
                 workspace.translationX = 0f
                 previewView?.let(workspace::removeView)
                 previewView = null
@@ -1214,8 +1212,10 @@ class HomeActivity : Activity() {
 
     private fun drawSearchProgress(progress: Float) {
         searchProgress = progress
-        searchPanel?.alpha = progress
-        homeLayer?.setRenderEffect(searchBlurEffects[(progress * 8).roundToInt()])
+        browser?.drawSearchProgress(progress)
+        val blur = searchBlurEffects[(progress * 8).roundToInt()]
+        homeLayer?.setRenderEffect(blur)
+        if (wallpaperLayer.background != null) wallpaperLayer.setRenderEffect(blur)
     }
 
     private fun animateSearch(target: Float) {
@@ -1254,7 +1254,7 @@ class HomeActivity : Activity() {
         browser = null
         content.removeView(panel)
         backdrop.setRenderEffect(null)
-        backdrop.background = null
+        wallpaperLayer.setRenderEffect(null)
         backdrop.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
         backdrop.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
         systemBars(root, true, keepStatusInset = true, padForIme = false)

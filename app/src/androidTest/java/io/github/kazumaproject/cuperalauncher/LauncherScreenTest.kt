@@ -360,11 +360,18 @@ class LauncherScreenTest {
                 }
                 val down = SystemClock.uptimeMillis()
                 touch(down, MotionEvent.ACTION_DOWN, x, y, automation)
-                touch(down, MotionEvent.ACTION_MOVE, x, y + size.height() * .025f, automation)
-                touch(down, MotionEvent.ACTION_MOVE, x, y + size.height() * .15f, automation)
+                val shortPull = 25 * home.resources.displayMetrics.density
+                touch(down, MotionEvent.ACTION_MOVE, x, y + shortPull, automation)
                 waitFor(home) { views -> views.any { it is EditText && it.hint == "Search apps" } }
                 onMain {
-                    assertFalse(descendants(home.window.decorView).filterIsInstance<EditText>().first().hasFocus())
+                    val input = descendants(home.window.decorView).filterIsInstance<EditText>().first()
+                    assertEquals(0f, (input.parent as View).alpha, 0f)
+                }
+                touch(down, MotionEvent.ACTION_MOVE, x, y + size.height() * .15f, automation)
+                onMain {
+                    val input = descendants(home.window.decorView).filterIsInstance<EditText>().first()
+                    assertTrue((input.parent as View).alpha > 0f)
+                    assertFalse(input.hasFocus())
                 }
                 return down
             }
@@ -373,6 +380,11 @@ class LauncherScreenTest {
             val reversed = preview()
             touch(reversed, MotionEvent.ACTION_MOVE, x, y, automation)
             touch(reversed, MotionEvent.ACTION_UP, x, y, automation)
+            waitFor(home) { views -> views.none { it is EditText && it.hint == "Search apps" } }
+            assertTrue(initialLayer === homeLayer())
+
+            val cancelled = preview()
+            touch(cancelled, MotionEvent.ACTION_CANCEL, x, y + size.height() * .15f, automation)
             waitFor(home) { views -> views.none { it is EditText && it.hint == "Search apps" } }
             assertTrue(initialLayer === homeLayer())
 
