@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.UiAutomation
 import android.content.Intent
 import android.os.SystemClock
+import android.view.Choreographer
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -16,6 +17,7 @@ import android.widget.ImageView
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.test.platform.app.InstrumentationRegistry
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
@@ -649,31 +651,52 @@ class LauncherScreenTest {
                         it.contentDescription == "Folder. Rename folder"
                     }?.parent as? View
                     waitFor(home) { views -> findCard(views)?.let { it.scaleX == 1f && it.alpha == 1f } == true }
-                    onMain { home.onBackPressed() }
-                    waitFor(home) { views ->
-                        findCard(views)?.let { card ->
-                            if (reduceMotion) card.alpha in .05f.. .95f else card.scaleX in .51f.. .98f
-                        } == true
+                    val tapped = CompletableFuture<Unit>()
+                    val tapDuringClose = object : Choreographer.FrameCallback {
+                        override fun doFrame(frameTimeNanos: Long) {
+                            val views = { descendants(home.window.decorView) }
+                            val card = findCard(views())
+                            if (card == null) {
+                                tapped.completeExceptionally(AssertionError("Folder closed before an intermediate frame"))
+                                return
+                            }
+                            val closing = if (reduceMotion) card.alpha in .05f..0.95f
+                                else card.scaleX in .51f..0.98f
+                            if (!closing) {
+                                Choreographer.getInstance().postFrameCallback(this)
+                                return
+                            }
+                            try {
+                                val source = views().first { it.contentDescription == "Folder" } as ViewGroup
+                                val icon = source.getChildAt(0)
+                                val origin = IntArray(2).also(icon::getLocationOnScreen)
+                                val decor = IntArray(2).also(home.window.decorView::getLocationOnScreen)
+                                val x = origin[0] - decor[0] + icon.width / 2f
+                                val y = origin[1] - decor[1] + icon.height / 2f
+                                val now = SystemClock.uptimeMillis()
+                                val alpha = card.alpha
+                                val scale = card.scaleX
+                                for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                                    val tap = MotionEvent.obtain(now, now, action, x, y, 0)
+                                    try { home.dispatchTouchEvent(tap) } finally { tap.recycle() }
+                                }
+                                assertTrue(findCard(views()) === card)
+                                assertEquals(alpha, card.alpha, .01f)
+                                assertEquals(scale, card.scaleX, .01f)
+                                tapped.complete(Unit)
+                            } catch (failure: Throwable) {
+                                tapped.completeExceptionally(failure)
+                            }
+                        }
                     }
                     onMain {
-                        val views = { descendants(home.window.decorView) }
-                        val card = requireNotNull(findCard(views()))
-                        val source = views().first { it.contentDescription == "Folder" } as ViewGroup
-                        val icon = source.getChildAt(0)
-                        val origin = IntArray(2).also(icon::getLocationOnScreen)
-                        val decor = IntArray(2).also(home.window.decorView::getLocationOnScreen)
-                        val x = origin[0] - decor[0] + icon.width / 2f
-                        val y = origin[1] - decor[1] + icon.height / 2f
-                        val now = SystemClock.uptimeMillis()
-                        val alpha = card.alpha
-                        val scale = card.scaleX
-                        for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
-                            val tap = MotionEvent.obtain(now, now, action, x, y, 0)
-                            try { home.dispatchTouchEvent(tap) } finally { tap.recycle() }
-                        }
-                        assertTrue(findCard(views()) === card)
-                        assertEquals(alpha, card.alpha, .01f)
-                        assertEquals(scale, card.scaleX, .01f)
+                        home.onBackPressed()
+                        Choreographer.getInstance().postFrameCallback(tapDuringClose)
+                    }
+                    try {
+                        tapped.get(5, TimeUnit.SECONDS)
+                    } finally {
+                        onMain { Choreographer.getInstance().removeFrameCallback(tapDuringClose) }
                     }
                     waitFor(home) { views -> findCard(views)?.let { it.scaleX == 1f && it.alpha == 1f } == true }
                     onMain { home.onBackPressed() }

@@ -72,6 +72,7 @@ class HomeActivity : Activity() {
     private var folderAnchor: Rect? = null
     private var openedFolderTile: View? = null
     private var folderPresentation: FolderPresentation? = null
+    private lateinit var wallpaperLayer: View
     private val folderBlurEffects by lazy {
         List(13) { level ->
             val radius = dp(11) * level / 12f
@@ -217,7 +218,11 @@ class HomeActivity : Activity() {
         root = FrameLayout(this).apply { clipToPadding = false }
         content = FrameLayout(this)
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
-        setContentView(root)
+        wallpaperLayer = View(this).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+        setContentView(FrameLayout(this).apply {
+            addView(wallpaperLayer, FrameLayout.LayoutParams(-1, -1))
+            addView(root, FrameLayout.LayoutParams(-1, -1))
+        })
         gesture = HomeGesture(this)
         content.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ ->
             val size = (r - l) to (b - t)
@@ -541,6 +546,7 @@ class HomeActivity : Activity() {
             it.backdropAnimator?.cancel()
         }
         folderPresentation = null
+        wallpaperLayer.setRenderEffect(null)
         if (folder == null) folderAnchor = null
         homeLayer = backdrop
         openedFolderTile = null
@@ -557,7 +563,8 @@ class HomeActivity : Activity() {
         val systemWallpaper = store.setting("wallpaper", "tide") == "system"
         if (systemWallpaper) window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
-        root.background = if (systemWallpaper) null else CuperaWallpaper(store.setting("wallpaper") == "dusk" || darkMode)
+        wallpaperLayer.background = if (systemWallpaper) null
+            else CuperaWallpaper(store.setting("wallpaper") == "dusk" || darkMode)
         window.setBackgroundDrawableResource(android.R.color.transparent)
         val isPanel = library || search
         val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
@@ -1412,7 +1419,9 @@ class HomeActivity : Activity() {
     private fun setFolderBackdrop(presentation: FolderPresentation, level: Int) {
         if (presentation.blurLevel == level) return
         presentation.blurLevel = level
-        presentation.backdrop.setRenderEffect(folderBlurEffects[level])
+        val blur = folderBlurEffects[level]
+        presentation.backdrop.setRenderEffect(blur)
+        if (wallpaperLayer.background != null) wallpaperLayer.setRenderEffect(blur)
         val opacity = 0x36 * level / folderBlurEffects.lastIndex
         presentation.overlay.setBackgroundColor((opacity shl 24) or 0x00091a34)
     }
