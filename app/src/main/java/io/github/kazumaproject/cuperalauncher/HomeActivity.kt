@@ -3,6 +3,7 @@ package io.github.kazumaproject.cuperalauncher
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.Dialog
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -30,6 +31,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.WindowInsetsController
 import android.view.WindowInsets
@@ -45,6 +47,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.Toast
+import java.util.function.Consumer
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -64,6 +67,71 @@ class HomeActivity : Activity() {
     private lateinit var workspace: FrameLayout
     private lateinit var dock: FrameLayout
     private var dockWallpaper: DockWallpaper? = null
+    private var systemDockBackdrop: Dialog? = null
+    private val dockBackdropPosition = IntArray(2)
+    private var dockUsesSystemWallpaper = false
+    private var dockBackdropResumed = false
+    private val dockBackdropPreDraw = ViewTreeObserver.OnPreDrawListener {
+        syncSystemDockBackdrop()
+        true
+    }
+    private val dockBackdropStateListener = Consumer<Boolean> { syncSystemDockBackdrop() }
+
+    private fun hideSystemDockBackdrop() {
+        systemDockBackdrop?.dismiss()
+        systemDockBackdrop = null
+    }
+
+    private fun syncSystemDockBackdrop() {
+        if (!dockBackdropResumed || !dockUsesSystemWallpaper || homeReturn != null ||
+            !::dock.isInitialized || !dock.isAttachedToWindow || !dock.isShown ||
+            dock.width == 0 || dock.height == 0 || search || folderPresentation != null ||
+            !windowManager.isCrossWindowBlurEnabled) {
+            hideSystemDockBackdrop()
+            return
+        }
+        dock.getLocationInWindow(dockBackdropPosition)
+        val (left, top) = dockBackdropPosition
+        val existing = systemDockBackdrop
+        val panel = existing ?: Dialog(this, R.style.Theme_Cupera_DockBackdrop).apply {
+            setContentView(View(this@HomeActivity).apply {
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+            setCancelable(false)
+            window?.apply {
+                // Sample the system wallpaper underneath Home; icons and input stay in Home.
+                setType(WindowManager.LayoutParams.TYPE_APPLICATION_MEDIA)
+                clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+                setWindowAnimations(0)
+                setBackgroundDrawable(rounded(Color.TRANSPARENT, dp(34).toFloat()))
+                setBackgroundBlurRadius(dp(12))
+            }
+        }
+        val panelWindow = panel.window ?: return
+        val attributes = panelWindow.attributes
+        if (existing == null || attributes.x != left || attributes.y != top ||
+            attributes.width != dock.width || attributes.height != dock.height) {
+            attributes.token = window.decorView.windowToken
+            attributes.title = "Cupera Dock Backdrop"
+            attributes.gravity = Gravity.TOP or Gravity.LEFT
+            attributes.fitInsetsTypes = 0
+            attributes.x = left
+            attributes.y = top
+            attributes.width = dock.width
+            attributes.height = dock.height
+            panelWindow.attributes = attributes
+        }
+        if (existing == null) {
+            try {
+                panel.show()
+                systemDockBackdrop = panel
+            } catch (failure: WindowManager.BadTokenException) {
+                android.util.Log.w("CuperaDockBackdrop", "Cannot attach background window", failure)
+            }
+        }
+    }
     private var grid: TileGrid? = null
     private var previewPage = -1
     private var homeFooter: LinearLayout? = null
@@ -251,6 +319,7 @@ class HomeActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        windowManager.addCrossWindowBlurEnabledListener(mainExecutor, dockBackdropStateListener)
         widgets.start()
         val presentation = homeReturn ?: return
         if (!canSettleHomeReturn(presentation)) {
@@ -272,6 +341,9 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        dockBackdropResumed = true
+        root.viewTreeObserver.addOnPreDrawListener(dockBackdropPreDraw)
+        root.invalidate()
         externalLaunchPending = false
         val before = darkMode
         darkMode = dark(store)
@@ -285,6 +357,9 @@ class HomeActivity : Activity() {
     }
 
     override fun onPause() {
+        dockBackdropResumed = false
+        root.viewTreeObserver.removeOnPreDrawListener(dockBackdropPreDraw)
+        hideSystemDockBackdrop()
         BadgeListener.changed = null
         browser?.cancelPendingKeyboard()
         finishHomeReturn()
@@ -295,6 +370,7 @@ class HomeActivity : Activity() {
     }
 
     override fun onStop() {
+        windowManager.removeCrossWindowBlurEnabledListener(dockBackdropStateListener)
         widgets.stop()
         super.onStop()
         val launched = externalLaunchPending
@@ -375,6 +451,7 @@ class HomeActivity : Activity() {
     }
 
     override fun onDestroy() {
+        hideSystemDockBackdrop()
         closed = true
         finishHomeReturn()
         stopSearchAnimation()
@@ -543,7 +620,10 @@ class HomeActivity : Activity() {
         stopSearchAnimation()
         searchPanel = null
         searchClosing = false
-        if (backdrop == null) renderedHome = null
+        if (backdrop == null) {
+            hideSystemDockBackdrop()
+            renderedHome = null
+        }
         if (::workspace.isInitialized) workspace.animate().cancel()
         folderPresentation?.let {
             it.card.animate().cancel()
@@ -566,6 +646,7 @@ class HomeActivity : Activity() {
         folderGrid = null
         folderPager = null
         val systemWallpaper = store.setting("wallpaper", "tide") == "system"
+        dockUsesSystemWallpaper = systemWallpaper
         if (systemWallpaper) window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
         wallpaperLayer.background = if (systemWallpaper) null
