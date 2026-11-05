@@ -52,6 +52,8 @@ import kotlin.math.roundToInt
 private const val FOLDER_PAGE_SIZE = 9
 private const val RETURN_FADE_START = .72f
 private const val RETURN_FRAME_WAIT_MS = 120L
+private const val LIBRARY_RETURN_PAUSE_MS = 150L
+private const val LIBRARY_HELD_RETURN_DISTANCE = .22f
 
 class HomeActivity : Activity() {
     private lateinit var store: Workspace
@@ -106,6 +108,8 @@ class HomeActivity : Activity() {
         var returnStartX = 0f
         var returnStartY = 0f
         var returnProgress = 1f
+        var returnLastX = 0f
+        var returnLastMoveAt = 0L
         var trackingReturn = false
         var draggingReturn = false
     }
@@ -1129,6 +1133,7 @@ class HomeActivity : Activity() {
         motion.view.visibility = if (motion.progress == 0f) View.INVISIBLE else View.VISIBLE
         motion.panel.drawLibraryProgress(motion.progress, content.width)
         workspace.translationX = -content.width * motion.progress
+        dock.translationX = workspace.translationX
         dock.alpha = 1f - motion.progress
         homeFooter?.alpha = 1f - motion.progress
     }
@@ -1744,10 +1749,16 @@ class HomeActivity : Activity() {
                     root.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) != true
                 motion.returnStartX = event.x
                 motion.returnStartY = event.y
+                motion.returnLastX = event.x
+                motion.returnLastMoveAt = event.eventTime
             }
             MotionEvent.ACTION_MOVE -> if (motion.trackingReturn) {
                 val dx = event.x - motion.returnStartX
                 val dy = abs(event.y - motion.returnStartY)
+                if (abs(event.x - motion.returnLastX) >= .5f) {
+                    motion.returnLastX = event.x
+                    motion.returnLastMoveAt = event.eventTime
+                }
                 if (!motion.draggingReturn && dy > libraryTouchSlop && dy > abs(dx)) motion.trackingReturn = false
                 if (!motion.draggingReturn && dx > libraryTouchSlop && dx > dy * 1.2f) {
                     stopLibraryAnimation(motion)
@@ -1767,7 +1778,14 @@ class HomeActivity : Activity() {
                 motion.trackingReturn = false
                 if (motion.draggingReturn) {
                     motion.draggingReturn = false
-                    library = event.actionMasked != MotionEvent.ACTION_UP || event.x - motion.returnStartX <= dp(44)
+                    library = true
+                    if (event.actionMasked == MotionEvent.ACTION_UP) {
+                        val dx = event.x - motion.returnStartX
+                        val progress = (motion.returnProgress - dx / content.width).coerceIn(0f, 1f)
+                        // Choose the target from UP and let the displayed frame settle toward it.
+                        val held = event.eventTime - motion.returnLastMoveAt >= LIBRARY_RETURN_PAUSE_MS
+                        library = if (held) progress > 1f - LIBRARY_HELD_RETURN_DISTANCE else dx <= dp(44)
+                    }
                     if (!library) {
                         invalidatePrivate()
                         reloadWorkspace()

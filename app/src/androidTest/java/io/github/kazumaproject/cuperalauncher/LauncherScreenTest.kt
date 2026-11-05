@@ -143,7 +143,7 @@ class LauncherScreenTest {
                     val input = libraryInput()
                     if (open) input?.isShown == true && panelPosition() == 0f else input == null
                 }
-                fun drag(offset: Float, finish: Int, reverse: Boolean = false, blocked: Boolean = false) {
+                fun drag(offset: Float, finish: Int, reverse: Boolean = false, blocked: Boolean = false, hold: Long = 0) {
                     val down = SystemClock.uptimeMillis()
                     touch(down, MotionEvent.ACTION_DOWN, x, y, automation)
                     var endAction = MotionEvent.ACTION_CANCEL
@@ -154,7 +154,7 @@ class LauncherScreenTest {
                         waitFor(home) {
                             val input = libraryInput()
                             input?.isShown == true &&
-                                if (blocked) panelPosition() == 0f else panelPosition() > travel / 2
+                                if (blocked) panelPosition() == 0f else panelPosition() > kotlin.math.abs(offset) / 2
                         }
                         var previous = 0f
                         onMain {
@@ -171,6 +171,7 @@ class LauncherScreenTest {
                             touch(down, MotionEvent.ACTION_MOVE, x, y, automation)
                         }
                         endX = if (reverse) x else x + offset
+                        if (hold > 0) SystemClock.sleep(hold)
                         endAction = finish
                     } finally {
                         touch(down, endAction, endX, y, automation)
@@ -217,7 +218,13 @@ class LauncherScreenTest {
                 waitForLibrary(true)
                 drag(travel, MotionEvent.ACTION_UP, reverse = true)
                 waitForLibrary(true)
+                drag(travel * (.18f / .34f), MotionEvent.ACTION_UP, hold = 250)
+                waitForLibrary(true)
                 drag(travel, MotionEvent.ACTION_UP)
+                waitForLibrary(false)
+                drag(-travel, MotionEvent.ACTION_UP)
+                waitForLibrary(true)
+                drag(travel * (.26f / .34f), MotionEvent.ACTION_UP, hold = 250)
                 waitForLibrary(false)
                 assertEquals(initial, workspace.read())
             } finally {
