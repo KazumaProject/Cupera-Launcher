@@ -646,10 +646,10 @@ class HomeActivity : Activity() {
         dockGrid = null
         if (dockHeight > 0) {
             val radius = dp(34).toFloat()
-            val tint = rounded(0x50edf5ff, radius, 0x64ffffff)
             if (systemWallpaper) {
-                dock.background = tint
+                dock.background = rounded(0x2effffff, radius, 0x64ffffff)
             } else {
+                val tint = rounded(0x50edf5ff, radius, 0x64ffffff)
                 val surface = DockWallpaper(this, store.setting("wallpaper") == "dusk" || darkMode,
                     totalWidth, totalHeight, dp(12).toFloat())
                 dockWallpaper = surface
