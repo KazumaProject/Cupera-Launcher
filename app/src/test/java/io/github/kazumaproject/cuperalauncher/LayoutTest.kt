@@ -46,13 +46,23 @@ class LayoutTest {
     @Test fun folderCreatesMovesAndDisappearsWhenEmpty() {
         val original = Layout(0, listOf(app("a", 0), app("b", 1)))
         val folderLayout = Layout(1, requireNotNull(original.move("a", Slot(0, 1), true)))
-        val folder = requireNotNull(folderLayout.at(Slot(0, 1)))
+        val folder = requireNotNull(folderLayout.at(Slot(0, 0)))
         assertEquals(TileKind.FOLDER, folder.kind)
         assertEquals(2, folderLayout.tiles.count { it.slot.folder == folder.id })
         val one = Layout(2, requireNotNull(folderLayout.move("a", Slot(0, 4))))
-        assertNotNull(one.at(Slot(0, 1)))
+        assertNotNull(one.at(Slot(0, 0)))
         val both = Layout(3, requireNotNull(one.move("b", Slot(0, 5))))
-        assertNull(both.at(Slot(0, 1)))
+        assertNull(both.at(Slot(0, 0)))
+    }
+
+    @Test fun groupingCompactsTheOccupiedRunButPreservesAnExistingGap() {
+        val original = Layout(0, listOf(app("source", 0), app("target", 1), app("next", 2), app("after-gap", 4)))
+        val grouped = Layout(1, requireNotNull(original.move("source", Slot(0, 1), createFolder = true)))
+
+        assertEquals(TileKind.FOLDER, grouped.at(Slot(0, 0))?.kind)
+        assertEquals("next", grouped.at(Slot(0, 1))?.id)
+        assertNull(grouped.at(Slot(0, 2)))
+        assertEquals("after-gap", grouped.at(Slot(0, 4))?.id)
     }
 
     @Test fun widgetsCannotOverlapOrLeaveGrid() {
