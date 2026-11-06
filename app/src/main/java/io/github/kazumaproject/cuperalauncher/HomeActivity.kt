@@ -6,6 +6,7 @@ import android.app.Activity
 import android.app.Dialog
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -1211,6 +1212,11 @@ class HomeActivity : Activity() {
 
     private fun launch(key: AppKey, anchor: View, user: UserHandle?) {
         closeKeyboard()
+        val settings = ComponentName(this, SettingsActivity::class.java)
+        if (user == null && key == AppKey(settings.flattenToString(), apps.personalSerial)) {
+            startActivity(Intent().setComponent(settings))
+            return
+        }
         if (apps.launch(key, anchor, !reduced, user)) {
             externalLaunchPending = !editing && !search && !library && folderPresentation == null &&
                 key.component.substringBefore('/') != packageName
