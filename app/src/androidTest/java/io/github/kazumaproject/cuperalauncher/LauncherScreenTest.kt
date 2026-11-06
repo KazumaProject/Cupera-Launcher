@@ -644,6 +644,173 @@ class LauncherScreenTest {
         } finally { onMain { settings.finish() } }
     }
 
+    @Test fun holdingAndDraggingFromNormalHomeMovesAndGroupsApps() {
+        assumeTrue("Requires an isolated Android device",
+            InstrumentationRegistry.getArguments().getString("interactionFixture") == "true")
+        val context = instrumentation.targetContext
+        Workspace(context).use { store ->
+            val original = store.read()
+            val apps = Apps(context).entries().filter { !it.work }.take(3)
+            assertEquals(3, apps.size)
+            val source = Tile("interaction-source", TileKind.APP, Slot(0, 0), apps[0].key, "Drag source")
+            val target = Tile("interaction-target", TileKind.APP, Slot(0, 1), apps[1].key, "Group target")
+            val third = Tile("interaction-third", TileKind.APP, Slot(0, 2), apps[2].key, "Third app")
+            val settings = mapOf("folder_drop" to "true", "hidden_pages" to "", "seeded" to "false", "badges" to "true")
+                .mapValues { (key, default) -> store.setting(key, default) }
+            store.put("folder_drop", "true")
+            store.put("hidden_pages", "")
+            store.put("seeded", "true")
+            store.put("badges", "false")
+            var home: Activity? = null
+            try {
+                assertTrue(store.save(original.revision, listOf(source, target, third)))
+                val first = open(HomeActivity::class.java)
+                home = first
+                try {
+                    waitFor(first) { first.hasWindowFocus() && it.any { view -> view.contentDescription == "Drag source" && view.isLaidOut } }
+                } catch (failure: AssertionError) {
+                    onMain {
+                        val descriptions = descendants(first.window.decorView).mapNotNull { it.contentDescription }.toList()
+                        throw AssertionError("Fixture screen focus=${first.hasWindowFocus()}, visible=$descriptions, layout=${store.read()}", failure)
+                    }
+                }
+                val before = store.read()
+                val from = screenCenter(first, "Drag source")
+                val to = screenCenter(first, "Group target")
+                fun holdDrag(start: Pair<Float, Float>, end: Pair<Float, Float>, action: Int, during: () -> Unit) {
+                    val down = SystemClock.uptimeMillis()
+                    touch(down, MotionEvent.ACTION_DOWN, start.first, start.second)
+                    SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 110L)
+                    for (i in 1..16) {
+                        val f = i / 16f
+                        touch(down, MotionEvent.ACTION_MOVE, start.first + (end.first - start.first) * f,
+                            start.second + (end.second - start.second) * f, sync = i == 16)
+                        SystemClock.sleep(20)
+                    }
+                    try {
+                        during()
+                    } catch (failure: Throwable) {
+                        touch(down, MotionEvent.ACTION_CANCEL, end.first, end.second)
+                        throw failure
+                    }
+                    touch(down, action, end.first, end.second)
+                }
+                fun waitForEdit() = waitFor(first) { views ->
+                    views.any { it is TextView && it.text == "Edit" && it.isLaidOut }
+                }
+                fun waitForGroup(target: String) = waitFor(first) { views ->
+                    views.firstOrNull { it.contentDescription == target }?.let { tile ->
+                        descendants(tile).any { it.foreground != null && it is android.widget.FrameLayout }
+                    } == true
+                }
+                holdDrag(from, to, MotionEvent.ACTION_CANCEL) {
+                    waitForEdit()
+                    waitForGroup("Group target")
+                    assertEquals(before, store.read())
+                }
+                assertEquals(before, store.read())
+                onMain { first.onBackPressed() }
+                waitFor(first) { it.none { view -> view is TextView && view.text == "Edit" } }
+                val currentFrom = screenCenter(first, "Drag source")
+                val currentTo = screenCenter(first, "Group target")
+                val thirdPoint = screenCenter(first, "Third app")
+                // Use a vacant cell on the first row before testing the folder path.
+                val farRight = (2f * thirdPoint.first - currentTo.first) to thirdPoint.second
+                holdDrag(currentFrom, farRight, MotionEvent.ACTION_UP) { assertEquals(before, store.read()) }
+                waitFor(first) { store.read().revision == before.revision + 1 }
+                val moved = store.read()
+                assertEquals(Slot(0, 3), moved.tiles.single { it.id == source.id }.slot)
+                assertEquals(before.revision + 1, moved.revision)
+                waitFor(first) { it.any { view -> view.contentDescription == "Drag source" && view.isLaidOut } }
+
+                holdDrag(screenCenter(first, "Drag source"), screenCenter(first, "Group target"), MotionEvent.ACTION_UP) {
+                    waitForGroup("Group target")
+                    assertEquals(moved, store.read())
+                }
+                waitFor(first) { it.any { view -> view.contentDescription == "Folder" && view.isLaidOut } }
+                val grouped = store.read()
+                val folder = grouped.tiles.single { it.kind == TileKind.FOLDER }
+                assertEquals(target.slot, folder.slot)
+                assertEquals(setOf(source.id, target.id), grouped.tiles.filter { it.slot.folder == folder.id }.map { it.id }.toSet())
+                assertEquals(moved.revision + 1, grouped.revision)
+
+                holdDrag(screenCenter(first, "Third app"), screenCenter(first, "Folder"), MotionEvent.ACTION_UP) {
+                    waitForGroup("Folder")
+                    assertEquals(grouped, store.read())
+                }
+                waitFor(first) { store.read().revision == grouped.revision + 1 }
+                val added = store.read()
+                assertEquals(setOf(source.id, target.id, third.id),
+                    added.tiles.filter { it.slot.folder == folder.id }.map { it.id }.toSet())
+                assertEquals(grouped.revision + 1, added.revision)
+                onMain { first.finish() }
+                val restarted = open(HomeActivity::class.java)
+                home = restarted
+                waitFor(restarted) { it.any { view -> view.contentDescription == "Folder" && view.isLaidOut } }
+                assertEquals(added, store.read())
+            } finally {
+                home?.let { onMain { it.finish() } }
+                assertTrue(store.save(store.read().revision, original.tiles))
+                settings.forEach(store::put)
+            }
+        }
+    }
+
+    @Test fun categoryPreviewExpandsASeparateGridAndBackRestoresItsSource() {
+        val home = open(HomeActivity::class.java)
+        try {
+            waitFor(home) { views -> views.any { it is TextView && it.text == "⌕  Search" } }
+            onMain {
+                descendants(home.window.decorView).filterIsInstance<TextView>().first { it.text == "⌕  Search" }.performClick()
+            }
+            waitFor(home) { views -> views.any { it is TextView && it.text == "Library" } }
+            onMain {
+                descendants(home.window.decorView).filterIsInstance<TextView>().first { it.text == "Library" }.performClick()
+            }
+            fun View.opensCategory() = contentDescription?.startsWith("Open ") == true &&
+                contentDescription?.endsWith(" category") == true
+            waitFor(home) { views -> views.any { it.opensCategory() && it.isLaidOut } }
+            var opened = ""
+            var trigger: View? = null
+            onMain {
+                val source = descendants(home.window.decorView).first { it.opensCategory() }
+                opened = source.contentDescription.toString().removePrefix("Open ").removeSuffix(" category")
+                trigger = source
+                assertTrue(source.performClick())
+            }
+            if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                waitFor(home) { views ->
+                    views.any { it.contentDescription == "Close $opened category" && it.alpha > 0f && it.alpha < 1f }
+                }
+            }
+            onMain { home.onBackPressed() }
+            waitFor(home) { views -> views.none { it.contentDescription == "Close $opened category" } }
+            val (x, y) = screenCenter(home, "Open $opened category")
+            val down = SystemClock.uptimeMillis()
+            touch(down, MotionEvent.ACTION_DOWN, x, y)
+            touch(down, MotionEvent.ACTION_UP, x, y)
+            waitFor(home) { views ->
+                views.any { it.contentDescription == "Close $opened category" && it.alpha == 1f } &&
+                    views.any { it.accessibilityPaneTitle == opened }
+            }
+            onMain {
+                val overlay = descendants(home.window.decorView).first { it.accessibilityPaneTitle == opened }
+                val entries = descendants(overlay).filter {
+                    it.isClickable && it.contentDescription != null && it.contentDescription != "Close $opened category"
+                }.toList()
+                assertTrue("Category should contain more than its preview", entries.size > 4)
+                home.onBackPressed()
+            }
+            waitFor(home) { views -> views.none { it.contentDescription == "Close $opened category" } }
+            onMain {
+                val restored = checkNotNull(trigger)
+                assertTrue(restored.isAttachedToWindow)
+                assertEquals(1f, (restored.parent.parent.parent as View).alpha)
+                assertTrue(restored.isFocused)
+            }
+        } finally { onMain { home.finish() } }
+    }
+
     @Test fun cancellingFolderDragKeepsLayoutAndReleasingCreatesAnOpenableFolder() {
         assumeTrue("Requires an isolated emulator with Photos and Play Store on Home",
             InstrumentationRegistry.getArguments().getString("folderFixture") == "true")

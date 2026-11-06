@@ -1,5 +1,8 @@
 package io.github.kazumaproject.cuperalauncher
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
@@ -9,8 +12,10 @@ import android.text.TextWatcher
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -57,9 +62,26 @@ class AppBrowser(
     private val surface get() = if (isSearch) 0x58323a4b else if (dark) 0xe5253247.toInt() else 0x66e9f5ff
     private lateinit var results: LinearLayout
     private var privateContent: LinearLayout? = null
+    private var privatePanel: View? = null
     private var generation = 0
     private var query = ""
-    private var selectedGroup: String? = null
+    private class Category(
+        val overlay: FrameLayout,
+        val card: View,
+        val scrim: View,
+        val title: View,
+        val trigger: View,
+        val sourceX: Float,
+        val sourceY: Float,
+        val scrollY: Int
+    ) {
+        var progress = 0f
+        var closing = false
+        var animator: ValueAnimator? = null
+    }
+
+    private lateinit var browserFrame: FrameLayout
+    private var category: Category? = null
     private var isSearch = false
     private var searchInput: EditText? = null
     private var searchControls: View? = null
@@ -73,9 +95,9 @@ class AppBrowser(
             host.getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
         }
     }
-    fun updateEntries(catalog: Catalog) {
+    fun updateEntries(catalog: Catalog, changed: Boolean = true) {
         this.catalog = catalog
-        drawResults()
+        if (category != null && !changed) drawPrivatePanel() else drawResults()
     }
 
     fun view(
@@ -122,7 +144,6 @@ class AppBrowser(
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                     query = normalized(s.toString())
                     if (query.isNotEmpty()) {
-                        selectedGroup = null
                         clearPrivate()
                     }
                     drawResults()
@@ -139,6 +160,13 @@ class AppBrowser(
         if (search && focusOnOpen) focusSearch() else if (search || focusOnOpen) root.requestFocus()
         if (!search) libraryControls = root
         return FrameLayout(host).apply {
+            browserFrame = this
+            addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(view: View) = Unit
+                override fun onViewDetachedFromWindow(view: View) {
+                    category?.let { removeCategory(it, restoreFocus = false) }
+                }
+            })
             isClickable = useHomeBackdrop
             val wallpaperHost = libraryBackground ?: this
             val systemWallpaper = store.setting("wallpaper", "tide") == "system"
@@ -167,7 +195,7 @@ class AppBrowser(
         }
     }
 
-    fun canReturnToHomeBySwipe(): Boolean = query.isEmpty() && selectedGroup == null && !showingPrivate
+    fun canReturnToHomeBySwipe(): Boolean = query.isEmpty() && category == null && !showingPrivate
 
     fun drawSearchProgress(progress: Float) {
         searchTint?.alpha = progress
@@ -196,7 +224,9 @@ class AppBrowser(
     }
 
     private fun drawResults() {
+        category?.let { removeCategory(it, restoreFocus = false) }
         results.removeAllViews()
+        privatePanel = null
         privateContent = null
         val filtered = catalog.matching(query)
         if (isSearch && query.isEmpty()) {
@@ -207,24 +237,15 @@ class AppBrowser(
         val grouped = !isSearch && query.isEmpty() && store.settingEnabled("library_groups")
         if (grouped) {
             val groups = filtered.groupBy(::category).toSortedMap()
-            val selected = selectedGroup
-            if (selected != null && selected in groups) {
-                results.addView(command("‹  All categories") { selectedGroup = null; drawResults() })
-                results.addView(heading(selected))
-                val card = card()
-                groups.getValue(selected).forEach { card.addView(appRow(it)) }
-                results.addView(card)
-            } else {
-                groups.entries.chunked(2).forEach { pair ->
-                    val row = host.horizontal()
-                    pair.forEach { (name, apps) ->
-                        row.addView(categoryCard(name, apps), LinearLayout.LayoutParams(0, -2, 1f).apply {
-                            setMargins(host.dp(4), 0, host.dp(4), host.dp(12))
-                        })
-                    }
-                    if (pair.size == 1) row.addView(View(host), LinearLayout.LayoutParams(0, 1, 1f))
-                    results.addView(row)
+            groups.entries.chunked(2).forEach { pair ->
+                val row = host.horizontal()
+                pair.forEach { (name, entries) ->
+                    row.addView(categoryCard(name, entries), LinearLayout.LayoutParams(0, -2, 1f).apply {
+                        setMargins(host.dp(4), 0, host.dp(4), host.dp(12))
+                    })
                 }
+                if (pair.size == 1) row.addView(View(host), LinearLayout.LayoutParams(0, 1, 1f))
+                results.addView(row)
             }
         } else {
             val card = card()
@@ -232,7 +253,14 @@ class AppBrowser(
             if (filtered.isEmpty()) card.addView(host.label("No apps found", 16f, secondary).apply { minHeight = host.dp(48) })
             results.addView(card)
         }
-        if (!isSearch && query.isEmpty() && selectedGroup == null && store.settingEnabled("private_container")) {
+        drawPrivatePanel()
+    }
+
+    private fun drawPrivatePanel() {
+        privatePanel?.let(results::removeView)
+        privatePanel = null
+        privateContent = null
+        if (!isSearch && query.isEmpty() && store.settingEnabled("private_container")) {
             apps.privateUser()?.let(::drawPrivate)
         }
     }
@@ -268,7 +296,7 @@ class AppBrowser(
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }
             cell.addView(icon, LinearLayout.LayoutParams(host.dp(48), host.dp(48)))
-            cell.addView(host.label(entry.title, 11f, foreground).apply {
+            cell.addView(host.label(entry.title, 11f, this@AppBrowser.foreground).apply {
                 gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
                 maxLines = 2
                 ellipsize = TextUtils.TruncateAt.END
@@ -281,34 +309,221 @@ class AppBrowser(
         results.addView(row)
     }
 
-    private fun categoryCard(name: String, apps: List<Apps.Entry>): View = card().apply {
-        setPadding(host.dp(8), host.dp(8), host.dp(8), host.dp(8))
+    private fun categoryCard(name: String, entries: List<Apps.Entry>): View = host.vertical().apply {
+        val windowWidth = host.resources.displayMetrics.widthPixels
+        val cellSize = (windowWidth * .183f).toInt().coerceIn(host.dp(52), host.dp(80))
+        val iconSize = (cellSize * .89f).toInt()
+        val preview = card().apply {
+            val padding = host.dp(9)
+            setPadding(padding, padding, padding, padding)
+            layoutParams = LinearLayout.LayoutParams(-1, -2)
+        }
+        val expandable = entries.size > 4
+        addView(preview)
         for (rowNumber in 0..1) {
             val row = host.horizontal()
             for (column in 0..1) {
-                val entry = apps.getOrNull(rowNumber * 2 + column)
-                val cell = android.widget.FrameLayout(host)
-                if (entry != null) {
-                    val size = host.dp(46)
-                    val image = ImageView(host).apply {
-                        background = rounded(if (dark) 0xff393e50.toInt() else 0xffe4e9f4.toInt(), size * .24f)
-                        clipToOutline = true
-                        host.icons.show(this, entry, !entry.work)
-                        contentDescription = entry.title
-                        setOnClickListener { onLaunch(entry.key, this, null) }
+                val index = rowNumber * 2 + column
+                val cell = FrameLayout(host)
+                if (index == 3 && expandable) {
+                    val trigger = host.vertical().apply {
+                        contentDescription = "Open $name category"
+                        isFocusableInTouchMode = true
+                        background = rounded(0x32ffffff, iconSize * .24f)
+                        setPadding(host.dp(3), host.dp(3), host.dp(3), host.dp(3))
+                        setOnClickListener { openCategory(name, entries, this) }
                     }
-                    cell.addView(image, android.widget.FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+                    repeat(2) { rowIndex ->
+                        val mini = host.horizontal()
+                        repeat(2) { columnIndex ->
+                            val entry = entries.getOrNull(3 + rowIndex * 2 + columnIndex)
+                            val thumb = if (entry == null) View(host) else libraryIcon(entry, iconSize / 2)
+                            thumb.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                            mini.addView(thumb, LinearLayout.LayoutParams(0, -1, 1f).apply {
+                                setMargins(host.dp(1), host.dp(1), host.dp(1), host.dp(1))
+                            })
+                        }
+                        trigger.addView(mini, LinearLayout.LayoutParams(-1, 0, 1f))
+                    }
+                    cell.addView(trigger, FrameLayout.LayoutParams(iconSize, iconSize, Gravity.CENTER))
+                } else entries.getOrNull(index)?.let { entry ->
+                    val image = libraryIcon(entry, iconSize)
+                    bindApp(image, entry, image)
+                    cell.addView(image, FrameLayout.LayoutParams(iconSize, iconSize, Gravity.CENTER))
                 }
-                row.addView(cell, LinearLayout.LayoutParams(0, host.dp(54), 1f))
+                row.addView(cell, LinearLayout.LayoutParams(0, cellSize, 1f))
             }
-            addView(row)
+            preview.addView(row)
         }
-        addView(command(name) { selectedGroup = name; drawResults() }.apply {
+        addView(host.label(name, 13f, this@AppBrowser.foreground, true).apply {
             gravity = Gravity.CENTER
-            minHeight = host.dp(42)
-            setPadding(0, 0, 0, 0)
-            textSize = 13f
+            minHeight = host.dp(26)
+            isAccessibilityHeading = true
         })
+    }
+
+    private fun libraryIcon(entry: Apps.Entry, size: Int) = ImageView(host).apply {
+        background = rounded(if (dark) 0xff393e50.toInt() else 0xffe4e9f4.toInt(), size * .24f)
+        clipToOutline = true
+        host.icons.show(this, entry, !entry.work)
+    }
+
+    private fun bindApp(view: View, entry: Apps.Entry, icon: View) {
+        view.contentDescription = if (entry.work) "${entry.title}, Work" else entry.title
+        view.setOnClickListener { onLaunch(entry.key, icon, null) }
+        view.setOnLongClickListener {
+            PopupMenu(host, view).apply {
+                menu.add("Add to Home").setOnMenuItemClickListener { onAdd(entry.key, ""); true }
+                show()
+            }
+            true
+        }
+    }
+
+    private fun openCategory(name: String, entries: List<Apps.Entry>, trigger: View) {
+        if (category != null || !trigger.isAttachedToWindow) return
+        val root = checkNotNull(libraryControls)
+        val location = IntArray(2).also(trigger::getLocationOnScreen)
+        val frameLocation = IntArray(2).also(browserFrame::getLocationOnScreen)
+        // The expanded view uses the same four-column grid proportions as the reference.
+        val width = (browserFrame.width * .915f).toInt().coerceIn(1, host.dp(480))
+        val cellWidth = width / 4
+        val iconSize = (cellWidth * .715f).toInt()
+        val rowHeight = maxOf((cellWidth * 1.08f).toInt(), iconSize + host.dp(32))
+        val top = (browserFrame.height * .202f).toInt()
+        val titleHeight = maxOf(host.dp(56), (width * .205f).toInt())
+        val title = host.label(name, 32f, foreground, true).apply {
+            gravity = Gravity.TOP or Gravity.START
+            setPadding((cellWidth - iconSize) / 2, 0, 0, 0)
+            isAccessibilityHeading = true
+            isFocusableInTouchMode = true
+        }
+        val scrim = View(host).apply {
+            setBackgroundColor(if (dark) 0xcc080a10.toInt() else 0xb51c2736.toInt())
+            contentDescription = "Close $name category"
+            setOnClickListener { closeCategory() }
+        }
+        val card = host.vertical().apply {
+            addView(title, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = host.dp(14) })
+            title.minimumHeight = titleHeight - host.dp(14)
+        }
+        val rows = host.vertical()
+        for (batch in entries.chunked(4)) {
+            val row = host.horizontal()
+            for (entry in batch) {
+                val icon = libraryIcon(entry, iconSize).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+                val item = host.vertical().apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    addView(icon, LinearLayout.LayoutParams(iconSize, iconSize))
+                    addView(host.label(entry.title, 11f, this@AppBrowser.foreground).apply {
+                        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                        maxLines = 2
+                        ellipsize = TextUtils.TruncateAt.END
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = host.dp(4) })
+                }
+                bindApp(item, entry, icon)
+                row.addView(item, LinearLayout.LayoutParams(0, -1, 1f))
+            }
+            repeat(4 - batch.size) { row.addView(View(host), LinearLayout.LayoutParams(0, 1, 1f)) }
+            rows.addView(row, LinearLayout.LayoutParams(-1, rowHeight))
+        }
+        val maxGridHeight = (browserFrame.height - top - titleHeight - host.dp(26)).coerceAtLeast(1)
+        val height = minOf(rows.childCount * rowHeight, maxGridHeight)
+        card.addView(ScrollView(host).apply { addView(rows) }, LinearLayout.LayoutParams(-1, height))
+        val overlay = FrameLayout(host).apply {
+            accessibilityPaneTitle = name
+            addView(scrim, FrameLayout.LayoutParams(-1, -1))
+            addView(card, FrameLayout.LayoutParams(width, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = top
+            })
+        }
+        val motion = Category(overlay, card, scrim, title, trigger,
+            location[0] - frameLocation[0] + trigger.width / 2f,
+            location[1] - frameLocation[1] + trigger.height / 2f,
+            (results.parent as ScrollView).scrollY)
+        category = motion
+        root.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        drawCategory(motion, 0f)
+        browserFrame.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        card.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+            override fun onLayoutChange(view: View, left: Int, top: Int, right: Int, bottom: Int,
+                                        oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int) {
+                card.removeOnLayoutChangeListener(this)
+                if (category === motion && !motion.closing) {
+                    drawCategory(motion, 0f)
+                    settleCategory(motion, 1f)
+                }
+            }
+        })
+    }
+
+    fun closeCategory(): Boolean {
+        val motion = category ?: return false
+        if (!motion.closing) {
+            motion.closing = true
+            settleCategory(motion, 0f)
+        }
+        return true
+    }
+
+    private fun drawCategory(motion: Category, progress: Float) {
+        motion.progress = progress
+        motion.scrim.alpha = progress
+        val card = motion.card
+        card.alpha = progress
+        if (!host.reduced && card.width > 0 && card.height > 0) {
+            val remaining = 1f - progress
+            card.translationX = (motion.sourceX - (card.left + card.width / 2f)) * remaining
+            card.translationY = (motion.sourceY - (card.top + card.height / 2f)) * remaining
+            card.scaleX = 1f + (motion.trigger.width.toFloat() / card.width - 1f) * remaining
+            card.scaleY = 1f + (motion.trigger.height.toFloat() / card.height - 1f) * remaining
+        }
+        motion.title.alpha = if (host.reduced) 1f else ((progress - .25f) / .75f).coerceIn(0f, 1f)
+        libraryControls?.alpha = if (host.reduced) 1f - progress else (1f - progress / .68f).coerceAtLeast(0f)
+    }
+
+    private fun settleCategory(motion: Category, target: Float) {
+        motion.animator?.removeAllListeners()
+        motion.animator?.cancel()
+        motion.animator = null
+        fun finish() {
+            if (target == 0f) removeCategory(motion, restoreFocus = true)
+            else motion.title.requestFocus()
+        }
+        if (!ValueAnimator.areAnimatorsEnabled() || motion.progress == target) {
+            drawCategory(motion, target)
+            finish()
+            return
+        }
+        motion.animator = ValueAnimator.ofFloat(motion.progress, target).apply {
+            val fullDuration = if (host.reduced) 160 else if (target == 1f) 755 else 600
+            duration = (fullDuration * kotlin.math.abs(target - motion.progress)).toLong()
+            if (!host.reduced) interpolator = PathInterpolator(.28f, .48f, .36f, 1f)
+            addUpdateListener { drawCategory(motion, it.animatedValue as Float) }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    motion.animator = null
+                    finish()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun removeCategory(motion: Category, restoreFocus: Boolean) {
+        category = null
+        motion.animator?.removeAllListeners()
+        motion.animator?.cancel()
+        (motion.overlay.parent as? ViewGroup)?.removeView(motion.overlay)
+        libraryControls?.apply {
+            alpha = 1f
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+        }
+        if (restoreFocus) {
+            motion.trigger.requestFocus()
+            (results.parent as ScrollView).scrollTo(0, motion.scrollY)
+        }
     }
 
     private fun drawPrivate(user: UserHandle) {
@@ -343,6 +558,7 @@ class AppBrowser(
         } else {
             panel.addView(command("Unlock Private Space") { requestState(user, false) })
         }
+        privatePanel = panel
         results.addView(panel)
     }
 
@@ -391,14 +607,10 @@ class AppBrowser(
         }
         row.addView(icon, LinearLayout.LayoutParams(host.dp(38), host.dp(38)).apply { marginEnd = host.dp(12) })
         row.addView(host.label(entry.title, 16f, foreground).apply { maxLines = 2 })
-        row.contentDescription = if (entry.work && user == null) "${entry.title}, Work" else entry.title
-        row.setOnClickListener { onLaunch(entry.key, icon, user) }
-        if (user == null) row.setOnLongClickListener {
-            PopupMenu(host, row).apply {
-                menu.add("Add to Home").setOnMenuItemClickListener { onAdd(entry.key, ""); true }
-                show()
-            }
-            true
+        if (user == null) bindApp(row, entry, icon)
+        else {
+            row.contentDescription = entry.title
+            row.setOnClickListener { onLaunch(entry.key, icon, user) }
         }
         return row
     }

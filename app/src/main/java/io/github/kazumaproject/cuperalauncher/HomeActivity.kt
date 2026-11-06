@@ -53,6 +53,9 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 private const val FOLDER_PAGE_SIZE = 9
+private const val FOLDER_HOVER_MS = 420L
+
+private object TileIcon
 private const val RETURN_FADE_START = .72f
 private const val RETURN_FRAME_WAIT_MS = 120L
 private const val LIBRARY_RETURN_PAUSE_MS = 150L
@@ -227,12 +230,13 @@ class HomeActivity : Activity() {
     private var lastSize = 0 to 0
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var gesture: HomeGesture
-    private val reduced get() = !ValueAnimator.areAnimatorsEnabled() || store.setting("motion") == "reduced"
+    internal val reduced get() = !ValueAnimator.areAnimatorsEnabled() || store.setting("motion") == "reduced"
     private val animateHomePages get() = ValueAnimator.areAnimatorsEnabled() && (!editing || !reduced)
 
     private val profiles = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (closed) return
+            if (gesture.dragging) gesture.cancel()
             val removed = intent.action == Intent.ACTION_PROFILE_REMOVED || intent.action == Intent.ACTION_MANAGED_PROFILE_REMOVED
             val available = android.os.Build.VERSION.SDK_INT >= 35 && intent.action == Intent.ACTION_PROFILE_AVAILABLE
             if (!available || !privateOpen || apps.privateUser()?.let(apps::privateUnlocked) != true) {
@@ -254,6 +258,7 @@ class HomeActivity : Activity() {
         override fun onPackageRemoved(name: String, user: UserHandle) {
             if (closed) return
             if (!isPublicProfile(user)) { invalidatePrivate(); return }
+            if (gesture.dragging) gesture.cancel()
             icons.invalidate()
             val manager = getSystemService(UserManager::class.java)
             val serial = manager.getSerialNumberForUser(user)
@@ -269,6 +274,7 @@ class HomeActivity : Activity() {
         private fun changed(user: UserHandle) {
             if (closed) return
             if (isPublicProfile(user)) {
+                if (gesture.dragging) gesture.cancel()
                 icons.invalidate()
                 refreshApps(packagesChanged = true)
             } else invalidatePrivate()
@@ -354,6 +360,11 @@ class HomeActivity : Activity() {
         hiddenPages = store.hiddenPages()
         refreshApps()
         BadgeListener.changed = { if (!editing && !search && !library && !gesture.active) render() }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus && ::gesture.isInitialized && gesture.dragging) gesture.cancel()
     }
 
     override fun onPause() {
@@ -556,7 +567,7 @@ class HomeActivity : Activity() {
                 }
                 current.updateEntries(catalog)
             } else if (library) {
-                current.updateEntries(catalog)
+                current.updateEntries(catalog, changed = false)
             }
         } else if (firstCatalog && !packagesChanged && renderedHome == homeDisplay()) {
             // An initial catalog can arrive while a folder or page is moving.
@@ -1102,6 +1113,7 @@ class HomeActivity : Activity() {
             }
         } else icon.addView(appIcon(tile), FrameLayout.LayoutParams(-1, -1))
         val iconOverlay = FrameLayout(this).apply {
+            tag = TileIcon
             clipChildren = false
             addView(icon, FrameLayout.LayoutParams(size, size))
         }
@@ -1145,7 +1157,10 @@ class HomeActivity : Activity() {
                 tile.key != null -> launch(tile.key, icon, null)
             }
         }
-        frame.setOnLongClickListener { tileMenu(frame, tile); true }
+        frame.setOnLongClickListener {
+            if (!gesture.defersTouchMenu(tile)) tileMenu(frame, tile)
+            true
+        }
         if (tile.id == folder) {
             frame.alpha = 0f
             openedFolderTile = frame
@@ -1383,6 +1398,11 @@ class HomeActivity : Activity() {
     private fun back() {
         finishHomeReturn()
         when {
+            gesture.dragging -> {
+                gesture.cancel()
+                return
+            }
+            library && browser?.closeCategory() == true -> return
             library && libraryMotion != null -> {
                 closeKeyboard()
                 invalidatePrivate()
@@ -1935,7 +1955,22 @@ class HomeActivity : Activity() {
             return dock.mapIndexed { index, tile -> tile.id to (dockStart(dock.size) + index * widthPerCell) }.toMap()
         }
 
-        fun preview(tiles: List<Tile>, dragging: String?, reduced: Boolean) {
+        fun anchor(id: String): View? = tileViews[id]?.second
+
+        fun icon(id: String): View? = anchor(id)?.findViewWithTag(TileIcon)
+
+        fun iconCenterContains(id: String, x: Float, y: Float): Boolean {
+            val icon = icon(id) ?: return false
+            val anchor = anchor(id) ?: return false
+            if (!icon.isLaidOut || !contains(this, x, y)) return false
+            val location = IntArray(2).also(::getLocationOnScreen)
+            // Use the slot geometry even while the visible icon is being shifted out of the way.
+            val centerX = location[0] + anchor.left + icon.left + icon.width / 2f
+            val centerY = location[1] + anchor.top + icon.top + icon.height / 2f
+            return abs(x - centerX) <= icon.width * .36f && abs(y - centerY) <= icon.height * .36f
+        }
+
+        fun preview(tiles: List<Tile>, dragging: String?, grouping: String?, reduced: Boolean) {
             val destinations = tiles.associateBy { it.id }
             val originalDock = dockPositions(tileViews.values.map { it.first })
             val projectedDock = dockPositions(tiles)
@@ -1950,6 +1985,22 @@ class HomeActivity : Activity() {
                 val dy = if (offset == null) 0f else
                     (((offset.cell - firstCell) / columns - (original.slot.cell - firstCell) / columns) * heightPerCell).toFloat()
                 val alpha = if (original.id == dragging) .25f else 1f
+                icon(original.id)?.let { targetIcon ->
+                    val grouped = original.id == grouping
+                    val scale = if (grouped && !reduced) 1.13f else 1f
+                    targetIcon.animate().cancel()
+                    if ((targetIcon.foreground != null) != grouped) {
+                        targetIcon.foreground = if (grouped) rounded(
+                            0x22ffffff, targetIcon.width * .25f, 0xbaffffff.toInt()
+                        ) else null
+                    }
+                    if (reduced) {
+                        targetIcon.scaleX = scale
+                        targetIcon.scaleY = scale
+                    } else if (targetIcon.scaleX != scale) {
+                        targetIcon.animate().scaleX(scale).scaleY(scale).setDuration(145).start()
+                    }
+                }
                 view.animate().cancel()
                 if (reduced) {
                     view.translationX = dx
@@ -2030,18 +2081,36 @@ class HomeActivity : Activity() {
         private var holdTimeout: Int? = null
         private var revision = 0L
         private var candidate: Drop? = null
-        private var hoverTime = 0L
+        private var groupSlot: Slot? = null
+        private var groupEnteredAt = 0L
+        private var groupReady = false
+        private var menuTile: Tile? = null
+        private var menuAnchor: View? = null
+        private var heldStill = false
+        private var shadowSize = 0
+        private var touchOffsetX = 0f
+        private var touchOffsetY = 0f
+        private var startedAsDefaultHome = false
         private var edge = 0
         private var origin: Tile? = null
         private var dragged: Tile? = null
         private var shadow: View? = null
-        val active get() = dragged != null || paging || previewingSearch
+        val dragging get() = dragged != null
+        val active get() = dragging || paging || previewingSearch
         private val hold = Runnable { finishEmptyHold() }
+        private val prepareGroup = Runnable {
+            if (dragging && groupSlot != null) {
+                groupReady = true
+                preview()
+            }
+        }
+
+        fun defersTouchMenu(tile: Tile): Boolean = menuTile?.id == tile.id
         private val turnPage = Runnable {
             if (dragged != null && edge != 0) {
                 if (host.folder == null) {
+                    clearDrop()
                     host.switchPage(host.page + edge)
-                    candidate = null
                 } else {
                     host.folderPager?.showPage(host.folderPage + edge, edgeTurn = true)
                     edge = 0
@@ -2063,9 +2132,44 @@ class HomeActivity : Activity() {
             host.render()
         }
 
-        private fun slot(x: Float, y: Float): Slot? {
-            return if (host.folder != null) host.folderGrid?.slot(x, y)
-            else host.dockGrid?.slot(x, y) ?: host.grid?.slot(x, y)
+        private fun grids() = if (host.folder != null) listOfNotNull(host.folderGrid)
+            else listOfNotNull(host.dockGrid, host.grid)
+
+        private fun slot(x: Float, y: Float): Slot? = grids().firstNotNullOfOrNull { it.slot(x, y) }
+
+        private fun groupTarget(destination: Drop?): Slot? {
+            val tile = dragged ?: return null
+            val slot = (destination as? Drop.Cell)?.slot ?: return null
+            val target = host.layout.at(slot) ?: return null
+            if (!host.store.settingEnabled("folder_drop") || !tile.isApp || target.id == tile.id) return null
+            if (target.kind == TileKind.FOLDER) {
+                if (host.layout.tiles.count { it.slot.folder == target.id } >= Slot(0, 0, target.id).capacity) return null
+            } else if (!target.isApp || target.slot.folder.isNotEmpty()) return null
+            val centerX = x - touchOffsetX + shadowSize / 2f
+            val centerY = y - touchOffsetY + shadowSize / 2f
+            return slot.takeIf { grids().any { grid -> grid.iconCenterContains(target.id, centerX, centerY) } }
+        }
+
+        private fun clearDrop() {
+            host.handler.removeCallbacks(prepareGroup)
+            candidate = null
+            groupSlot = null
+            groupReady = false
+        }
+
+        private fun startDrag(tile: Tile, event: MotionEvent) {
+            val icon = grids().firstNotNullOfOrNull { it.icon(tile.id) }
+            shadowSize = icon?.width?.takeIf { it > 0 } ?: host.dp(67)
+            val location = icon?.let { IntArray(2).also(it::getLocationOnScreen) }
+            touchOffsetX = location?.let { startX - it[0] }?.coerceIn(0f, shadowSize.toFloat()) ?: shadowSize / 2f
+            touchOffsetY = location?.let { startY - it[1] }?.coerceIn(0f, shadowSize.toFloat()) ?: shadowSize / 2f
+            startedAsDefaultHome = host.apps.hasHome()
+            dragged = tile
+            host.cancelChild(event)
+            if (host.editing) draw() else {
+                host.editing = true
+                host.render()
+            }
         }
 
         private fun drop(x: Float, y: Float): Drop? {
@@ -2092,6 +2196,11 @@ class HomeActivity : Activity() {
                     }
                     tracking = true
                     origin = s?.let(host.layout::at)
+                    origin?.takeIf { it.isApp || (host.editing && it.kind == TileKind.FOLDER) }?.let { tile ->
+                        menuAnchor = grids().firstNotNullOfOrNull { it.anchor(tile.id) }
+                        menuTile = tile.takeIf { menuAnchor != null }
+                        heldStill = menuTile != null
+                    }
                     revision = host.layout.revision
                     if (origin == null) {
                         val timeout = ViewConfiguration.getLongPressTimeout()
@@ -2121,12 +2230,12 @@ class HomeActivity : Activity() {
                     val distance = abs(dx) + abs(dy)
                     if (distance > holdSlop) stopHold()
                     if (distance <= slop && !active) return emptyHold
+                    if (event.eventTime - event.downTime < ViewConfiguration.getLongPressTimeout()) heldStill = false
                     if (!active) {
                         val tile = origin
-                        if (host.editing && tile != null) {
-                            dragged = tile
-                            host.cancelChild(event)
-                            draw()
+                        val held = heldStill && event.eventTime - event.downTime >= ViewConfiguration.getLongPressTimeout()
+                        if (tile != null && (host.editing || held)) {
+                            startDrag(tile, event)
                         } else if (host.folder == null && abs(dx) > abs(dy) * 1.2f) {
                             paging = true
                             pageDragOffset = host.beginPageDrag()
@@ -2148,7 +2257,7 @@ class HomeActivity : Activity() {
                         host.followPage(pageDragOffset + travel)
                         return true
                     }
-                    updateDrag()
+                    updateDrag(eventTime = event.eventTime)
                     return dragged != null
                 }
                 MotionEvent.ACTION_UP -> {
@@ -2181,14 +2290,28 @@ class HomeActivity : Activity() {
                     val tile = dragged
                     if (tile != null) {
                         val destination = drop(x, y)
-                        val merge = destination == candidate && android.os.SystemClock.uptimeMillis() - hoverTime >= 420 &&
-                            host.store.settingEnabled("folder_drop")
+                        val group = groupSlot != null && groupTarget(destination) == groupSlot &&
+                            event.eventTime - groupEnteredAt >= FOLDER_HOVER_MS
+                        val next = destination?.takeIf { !startedAsDefaultHome || host.apps.hasHome() }
+                            ?.let { move(tile, it, group) }
+                        val originalRevision = revision
                         cancel()
-                        if (destination != null) {
-                            move(tile, destination, merge)?.let { host.commit(it, revision) }
-                        }
+                        if (next != null) host.commit(next, originalRevision)
                         return true
                     }
+                    val menu = menuTile
+                    val anchor = menuAnchor
+                    if (heldStill && tracking && menu != null && anchor?.isAttachedToWindow == true &&
+                        event.eventTime - event.downTime >= ViewConfiguration.getLongPressTimeout() &&
+                        abs(x - startX) + abs(y - startY) <= slop
+                    ) {
+                        host.cancelChild(event)
+                        cancel()
+                        host.tileMenu(anchor, menu)
+                        return true
+                    }
+                    menuTile = null
+                    menuAnchor = null
                     if (verticalScroll && y - startY > host.dp(65) && abs(x - startX) < (y - startY) * .6f &&
                         host.folder == null && !host.editing && host.store.settingEnabled("search_gesture")
                     ) {
@@ -2203,11 +2326,18 @@ class HomeActivity : Activity() {
             return false
         }
 
-        private fun updateDrag(edgeDelay: Long = 430) {
+        private fun updateDrag(edgeDelay: Long = 430, eventTime: Long = SystemClock.uptimeMillis()) {
             val destination = drop(x, y)
-            if (destination != candidate) {
+            val group = groupTarget(destination)
+            if (destination != candidate || group != groupSlot) {
                 candidate = destination
-                hoverTime = android.os.SystemClock.uptimeMillis()
+                if (group != groupSlot) {
+                    host.handler.removeCallbacks(prepareGroup)
+                    groupSlot = group
+                    groupEnteredAt = eventTime
+                    groupReady = false
+                    if (group != null) host.handler.postAtTime(prepareGroup, eventTime + FOLDER_HOVER_MS)
+                }
                 preview()
             }
             val location = IntArray(2).also(host.content::getLocationOnScreen)
@@ -2232,9 +2362,10 @@ class HomeActivity : Activity() {
 
         private fun preview() {
             val tile = dragged
-            val provisional = candidate?.let { drop -> tile?.let { move(it, drop) } }
+            val provisional = candidate?.takeUnless { groupReady }?.let { drop -> tile?.let { move(it, drop) } }
+            val grouping = groupSlot?.takeIf { groupReady }?.let(host.layout::at)?.id
             listOfNotNull(host.grid, host.dockGrid, host.folderGrid).forEach {
-                it.preview(provisional ?: host.layout.tiles, tile?.id, host.reduced)
+                it.preview(provisional ?: host.layout.tiles, tile?.id, grouping, host.reduced)
             }
         }
 
@@ -2249,15 +2380,24 @@ class HomeActivity : Activity() {
             view.alpha = .86f
             view.elevation = host.dp(12).toFloat()
             view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            host.content.addView(view, FrameLayout.LayoutParams(host.dp(67), host.dp(67)))
+            host.content.addView(view, FrameLayout.LayoutParams(shadowSize, shadowSize))
             shadow = view
             position()
+            // Entering edit mode or turning a page can replace the drop grid during a MOVE.
+            val observer = host.content.viewTreeObserver
+            observer.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (observer.isAlive) observer.removeOnPreDrawListener(this)
+                    if (shadow === view) updateDrag()
+                    return true
+                }
+            })
         }
 
         private fun position() {
             val location = IntArray(2).also(host.content::getLocationOnScreen)
-            shadow?.translationX = x - location[0] - host.dp(33)
-            shadow?.translationY = y - location[1] - host.dp(33)
+            shadow?.translationX = x - location[0] - touchOffsetX
+            shadow?.translationY = y - location[1] - touchOffsetY
         }
 
         fun cancel() {
@@ -2271,7 +2411,10 @@ class HomeActivity : Activity() {
             val wasDragging = dragged != null
             dragged = null
             origin = null
-            candidate = null
+            menuTile = null
+            menuAnchor = null
+            heldStill = false
+            clearDrop()
             if (wasDragging) preview()
             edge = 0
             tracking = false
