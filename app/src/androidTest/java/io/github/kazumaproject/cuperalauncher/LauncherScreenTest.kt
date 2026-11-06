@@ -709,6 +709,15 @@ class LauncherScreenTest {
                     assertEquals(before, store.read())
                 }
                 assertEquals(before, store.read())
+                val currentSource = screenCenter(first, "Drag source")
+                val currentTarget = screenCenter(first, "Group target")
+                val quickDrop = SystemClock.uptimeMillis()
+                touch(quickDrop, MotionEvent.ACTION_DOWN, currentSource.first, currentSource.second)
+                touch(quickDrop, MotionEvent.ACTION_MOVE, (currentSource.first + currentTarget.first) / 2f, currentTarget.second)
+                SystemClock.sleep(50)
+                touch(quickDrop, MotionEvent.ACTION_MOVE, currentTarget.first, currentTarget.second, sync = false)
+                touch(quickDrop, MotionEvent.ACTION_UP, currentTarget.first, currentTarget.second)
+                onMain { assertEquals(before, store.read()) }
                 onMain { first.onBackPressed() }
                 waitFor(first) { it.none { view -> view is TextView && view.text == "Edit" } }
                 val currentFrom = screenCenter(first, "Drag source")
@@ -723,16 +732,30 @@ class LauncherScreenTest {
                 assertEquals(before.revision + 1, moved.revision)
                 waitFor(first) { it.any { view -> view.contentDescription == "Drag source" && view.isLaidOut } }
 
-                holdDrag(screenCenter(first, "Drag source"), screenCenter(first, "Group target"), MotionEvent.ACTION_UP) {
-                    waitForGroup("Group target")
+                holdDrag(screenCenter(first, "Drag source"), currentFrom, MotionEvent.ACTION_UP) {
                     assertEquals(moved, store.read())
                 }
-                waitFor(first) { it.any { view -> view.contentDescription == "Folder" && view.isLaidOut } }
+                waitFor(first) { store.read().revision == moved.revision + 1 }
+                val restored = store.read()
+                assertEquals(source.slot, restored.tiles.single { it.id == source.id }.slot)
+                waitFor(first) { it.any { view -> view.contentDescription == "Drag source" && view.isLaidOut } }
+
+                val targetPosition = screenCenter(first, "Group target")
+                holdDrag(screenCenter(first, "Drag source"), targetPosition, MotionEvent.ACTION_UP) {
+                    waitForGroup("Group target")
+                    assertEquals(targetPosition, screenCenter(first, "Group target"))
+                    assertEquals(restored, store.read())
+                }
+                waitFor(first) { it.any { view ->
+                    view.contentDescription == "Folder" && view.isLaidOut &&
+                        view.translationX == 0f && view.translationY == 0f
+                } }
                 val grouped = store.read()
                 val folder = grouped.tiles.single { it.kind == TileKind.FOLDER }
-                assertEquals(target.slot, folder.slot)
+                assertEquals(source.slot, folder.slot)
+                assertEquals(target.slot, grouped.tiles.single { it.id == third.id }.slot)
                 assertEquals(setOf(source.id, target.id), grouped.tiles.filter { it.slot.folder == folder.id }.map { it.id }.toSet())
-                assertEquals(moved.revision + 1, grouped.revision)
+                assertEquals(restored.revision + 1, grouped.revision)
 
                 holdDrag(screenCenter(first, "Third app"), screenCenter(first, "Folder"), MotionEvent.ACTION_UP) {
                     waitForGroup("Folder")

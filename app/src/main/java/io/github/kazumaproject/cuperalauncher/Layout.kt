@@ -74,6 +74,17 @@ data class Layout(val revision: Long, val tiles: List<Tile>) {
                 result.add(Tile(folderId, TileKind.FOLDER, target.slot, name = "Folder"))
                 result.add(target.copy(slot = Slot(0, 0, folderId)))
                 result.add(moving.copy(slot = Slot(0, 1, folderId)))
+                if (moving.slot.folder.isEmpty() && moving.slot.page >= 0 && moving.slot.page == target.slot.page) {
+                    // Close the gap left by this drag without filling existing gaps or moving widgets.
+                    var vacancy = moving.slot
+                    while (vacancy.cell + 1 < vacancy.capacity) {
+                        val next = vacancy.copy(cell = vacancy.cell + 1)
+                        val index = result.indexOfFirst { it.slot == next }
+                        if (index < 0 || result[index].isWidget) break
+                        result[index] = result[index].copy(slot = vacancy)
+                        vacancy = next
+                    }
+                }
                 return removeEmptyFolders(result).takeIf(::valid)
             }
         }
