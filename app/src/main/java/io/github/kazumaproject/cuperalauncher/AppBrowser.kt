@@ -15,6 +15,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -328,7 +330,7 @@ class AppBrowser(
                 if (index == 3 && expandable) {
                     val trigger = host.vertical().apply {
                         contentDescription = "Open $name category"
-                        isFocusableInTouchMode = true
+                        isFocusable = true
                         background = rounded(0x32ffffff, iconSize * .24f)
                         setPadding(host.dp(3), host.dp(3), host.dp(3), host.dp(3))
                         setOnClickListener { openCategory(name, entries, this) }
@@ -521,7 +523,12 @@ class AppBrowser(
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
         }
         if (restoreFocus) {
-            motion.trigger.requestFocus()
+            val trigger = motion.trigger
+            val accessibility = host.getSystemService(AccessibilityManager::class.java)
+            if (!trigger.isInTouchMode) trigger.requestFocus()
+            else if (accessibility.isTouchExplorationEnabled) {
+                trigger.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
+            }
             (results.parent as ScrollView).scrollTo(0, motion.scrollY)
         }
     }

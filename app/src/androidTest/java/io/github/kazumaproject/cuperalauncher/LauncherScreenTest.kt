@@ -776,8 +776,14 @@ class LauncherScreenTest {
                 val source = descendants(home.window.decorView).first { it.opensCategory() }
                 opened = source.contentDescription.toString().removePrefix("Open ").removeSuffix(" category")
                 trigger = source
-                assertTrue(source.performClick())
             }
+            fun tapCategory() {
+                val (x, y) = screenCenter(home, "Open $opened category")
+                val down = SystemClock.uptimeMillis()
+                touch(down, MotionEvent.ACTION_DOWN, x, y)
+                touch(down, MotionEvent.ACTION_UP, x, y)
+            }
+            tapCategory()
             if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
                 waitFor(home) { views ->
                     views.any { it.contentDescription == "Close $opened category" && it.alpha > 0f && it.alpha < 1f }
@@ -785,10 +791,7 @@ class LauncherScreenTest {
             }
             onMain { home.onBackPressed() }
             waitFor(home) { views -> views.none { it.contentDescription == "Close $opened category" } }
-            val (x, y) = screenCenter(home, "Open $opened category")
-            val down = SystemClock.uptimeMillis()
-            touch(down, MotionEvent.ACTION_DOWN, x, y)
-            touch(down, MotionEvent.ACTION_UP, x, y)
+            tapCategory()
             waitFor(home) { views ->
                 views.any { it.contentDescription == "Close $opened category" && it.alpha == 1f } &&
                     views.any { it.accessibilityPaneTitle == opened }
@@ -806,7 +809,7 @@ class LauncherScreenTest {
                 val restored = checkNotNull(trigger)
                 assertTrue(restored.isAttachedToWindow)
                 assertEquals(1f, (restored.parent.parent.parent as View).alpha)
-                assertTrue(restored.isFocused)
+                if (!restored.isInTouchMode) assertTrue(restored.isFocused)
             }
         } finally { onMain { home.finish() } }
     }
